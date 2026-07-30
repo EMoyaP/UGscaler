@@ -21,8 +21,8 @@ the following conditions:
 
 4. Third-party components, models, binaries, and libraries included with the
    Software remain subject to their own licenses. Their use is not relicensed
-   by this document. See THIRD_PARTY_NOTICES.md and the notices bundled in
-   app/src/main/assets/realesrgan/.
+by this document. See THIRD_PARTY_NOTICES.md and the notices bundled in
+app/src/main/assets/realesrgan/ and app/src/main/assets/licenses/.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,

@@ -1,64 +1,87 @@
 # UGscaler
 
-Aplicacion Android para recuperar detalle de fotografias y fotogramas de video localmente.
+Aplicación Android para recuperar detalle de fotografías y obtener un
+fotograma estático de mayor calidad a partir de un video. Todo el procesado de
+las imágenes se realiza en el dispositivo.
 
-UGscaler esta pensada para recuperar detalle despues de recortar una foto o seleccionar un fotograma borroso de un video. Procesa el contenido en el propio dispositivo, compara el original con el resultado y permite exportar una copia JPG.
+## Novedades de la versión 1.4.0
 
-## Funciones
+- Fusión temporal real de cinco fotogramas.
+- Alineación ORB + homografía RANSAC para compensar el movimiento de cámara.
+- Rechazo fotométrico para no mezclar personas u objetos que se han movido.
+- Reconstrucción general con Real-ESRGAN/NCNN.
+- Restauración facial opcional con CodeFormer y fidelidad `0.9`.
+- Detección y alineación facial local mediante el modelo integrado de ML Kit.
+- Verificación SHA-256 del modelo CodeFormer descargado.
+- Aviso visible de que la restauración facial es generativa y puede reconstruir rasgos.
 
-- Mejora IA local sin subir imagenes ni videos a ningun servidor.
-- Ventanas independientes para Foto y Video.
-- Selector temporal de video por indice exacto, con analisis local de hasta 21 fotogramas vecinos.
-- Medida de enfoque por regiones: evita que el salpicadero, marcos o bordes ganen a un sujeto desenfocado.
-- NAFNet motion deblur en ONNX Runtime para ARM64, ejecutado por teselas con proteccion contra artefactos.
-- Backend nativo Real-ESRGAN/NCNN para ARM64 como segunda etapa de reconstruccion y escalado.
-- GPU Vulkan cuando esta disponible y fallback automatico a CPU.
-- Motor local de respaldo para dispositivos incompatibles.
+## Cómo funciona
+
+En modo Video, UGscaler lee índices de fotograma reales, selecciona la base con
+mejor detalle útil y alinea sus dos vecinos anteriores y posteriores. Solo
+fusiona píxeles consistentes, por lo que esta primera etapa aprovecha
+información capturada de verdad por el video.
+
+Después, Real-ESRGAN reconstruye bordes y aumenta la resolución. Si `Rostro IA`
+está activado y se detecta un rostro válido, UGscaler lo alinea a 512 × 512,
+aplica CodeFormer con fidelidad alta y lo integra de nuevo mediante una máscara
+suave. La opción se puede desactivar porque esta última etapa es generativa.
+
+## Privacidad y modelo opcional
+
+Las fotos y los videos no se suben a servidores. CodeFormer pesa unos 359 MiB,
+por lo que se descarga una sola vez cuando realmente se detecta un rostro. La
+app comprueba su SHA-256 antes de instalarlo y, a partir de ahí, funciona sin
+conexión. Consulta [MODEL_MANIFEST.md](MODEL_MANIFEST.md).
+
+## Otras funciones
+
+- Modos independientes Foto y Video.
+- Cámara, galería, corrección EXIF y selector temporal.
 - Presets Auto, Retrato, Paisaje y Texto.
-- Controles de reduccion de ruido, detalle y enfoque.
-- Escalado 2x y 4x.
-- Visor antes/despues con divisor deslizable.
-- Camara, galeria, videos, correccion EXIF y guardado en `Imagenes/UGscaler`.
-- Boton Nuevo y boton Atras para volver a elegir otro archivo sin cerrar la aplicacion.
-
-## Pipeline de restauracion
-
-Para fotos se ejecuta NAFNet motion deblur por teselas y despues Real-ESRGAN para reconstruccion y escalado. Para video, UGscaler 1.3.0 lee indices de fotograma reales cuando Android lo permite, puntua el detalle de regiones informativas y busca vecinos cercanos sin cambiar bruscamente la composicion. El fotograma ganador pasa directamente a Real-ESRGAN: las pruebas sobre video real mostraron que volver a desenfocar ese fotograma con un modelo entrenado en degradaciones sinteticas empeoraba el resultado.
-
-Los proyectos revisados para futuras variantes son [MISCFilter](https://github.com/ChengxuLiu/MISCFilter), [Restormer](https://github.com/swz30/Restormer), [RVRT](https://github.com/JingyunLiang/RVRT), [VRT](https://github.com/JingyunLiang/VRT) y [BasicVSR++](https://github.com/ckkelvinchan/BasicVSR_PlusPlus). NAFNet ya esta incluido en este APK; los demas requieren conversiones, cuantizacion, memoria y licencias independientes.
+- Controles de ruido, detalle, enfoque y escala 2×/4×.
+- Recorte, comparación antes/después y exportación a `Imágenes/UGscaler`.
+- Botones Nuevo y Atrás para editar otro archivo sin cerrar la aplicación.
+- Backend ARM64 con Vulkan cuando el dispositivo lo permite y respaldo local.
 
 ## Descargar
 
-La version actual es `1.3.0` y el APK esta en la raiz como [`UGscaler-v1.3.0.apk`](UGscaler-v1.3.0.apk).
-
-Es una build debug para pruebas. Antes de distribuirla en Google Play habria que generar una build release firmada y completar la revision de licencias, privacidad y politicas de la tienda.
+La versión actual es `1.4.0`. La APK se encuentra en la raíz como
+[`UGscaler-v1.4.0.apk`](UGscaler-v1.4.0.apk). El nombre no incluye el sufijo
+`debug`, aunque se trata de una compilación de pruebas firmada con la clave de
+depuración de Android.
 
 ## Compilar
 
-Requisitos:
-
-- JDK 17.
-- Android SDK con Android 35.
-- Gradle 8.7 o el wrapper incluido.
+Requisitos: JDK 17, Android SDK 35 y un dispositivo ARM64.
 
 ```powershell
-.\gradlew.bat assembleDebug
+.\gradlew.bat clean lintDebug testDebugUnitTest assembleDebug
 ```
 
-El APK se genera en `app/build/outputs/apk/debug/UGscaler-v1.3.0.apk`.
+La salida se genera como
+`app/build/outputs/apk/debug/UGscaler-v1.4.0.apk`.
 
-Los modelos y runtimes ocupan aproximadamente 100 MB dentro del APK. En el primer uso se extraen al almacenamiento privado de la aplicacion.
+La conversión reproducible del checkpoint oficial se documenta en
+`tools/export_codeformer_onnx.py`; `tools/validate_codeformer_onnx.py` ejecuta
+una comprobación de inferencia sobre un rostro alineado.
 
-## Limitaciones conocidas
+## Límites reales
 
-- La mejora generativa no puede reconstruir con certeza informacion que nunca fue capturada; puede inventar textura en zonas muy degradadas.
-- El backend incluido es ARM64. En otros ABIs se utiliza el motor local de respaldo.
-- La ejecucion real de GPU depende del driver Vulkan del dispositivo.
-- El modo video exporta el fotograma recuperado como JPG; no re-renderiza todavia el video completo.
-- El APK actual es debug y no esta optimizado para publicacion comercial.
+- Ningún algoritmo puede recuperar con certeza datos que el sensor nunca
+  capturó. La fusión temporal sí aprovecha detalle de otros fotogramas, pero
+  necesita que exista solapamiento suficiente.
+- CodeFormer puede reconstruir ojos, piel, pelo u otros rasgos plausibles que
+  no sean idénticos a los originales.
+- ML Kit necesita aproximadamente 100 × 100 píxeles útiles de rostro para una
+  detección fiable.
+- El modelo CodeFormer requiere unos 359 MiB adicionales en el almacenamiento
+  privado de la aplicación.
+- La APK incluida es ARM64 y el modo Video exporta un fotograma JPG, no vuelve
+  a renderizar el video completo.
 
 ## Licencia
 
-El codigo propio de UGscaler se distribuye bajo la [UGscaler Non-Commercial License 1.0](LICENSE). Permite uso personal, educativo y de investigacion, pero no uso comercial sin autorizacion previa.
-
-Los componentes de terceros mantienen sus propias licencias. Consulta [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) y los avisos incluidos con el backend.
+El código propio se distribuye bajo
+[UGscaler Non-Commercial License 1.0](LICENSE). Los componentes de terceros
+conservan sus licencias; consulta [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

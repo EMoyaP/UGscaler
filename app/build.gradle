@@ -2,7 +2,7 @@ plugins { id 'com.android.application' }
 
 android { namespace 'com.mejorarfotos.app'; compileSdk 35
     defaultConfig {
-        applicationId 'com.mejorarfotos.app'; minSdk 26; targetSdk 35; versionCode 5; versionName '1.3.0'
+        applicationId 'com.mejorarfotos.app'; minSdk 26; targetSdk 35; versionCode 6; versionName '1.4.0'
         ndk { abiFilters 'arm64-v8a' }
     }
     applicationVariants.configureEach { variant ->
@@ -10,10 +10,22 @@ android { namespace 'com.mejorarfotos.app'; compileSdk 35
             output.outputFileName = "UGscaler-v${variant.versionName}.apk"
         }
     }
+    buildTypes {
+        debug {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    androidResources {
+        ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~:contours.tfl'
+    }
 }
 
 dependencies {
     implementation 'androidx.core:core:1.15.0'
     implementation 'androidx.exifinterface:exifinterface:1.3.7'
     implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.19.2'
+    implementation 'com.google.mlkit:face-detection:16.1.7'
+    implementation 'org.opencv:opencv:4.12.0'
 }

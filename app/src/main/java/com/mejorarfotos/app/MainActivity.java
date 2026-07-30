@@ -22,6 +22,7 @@ import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -52,6 +53,7 @@ public class MainActivity extends Activity {
     private View videoControlsView;
     private Button enhanceButton, saveButton, compareButton, photoMode, videoMode;
     private SeekBar noiseSeek, detailSeek, sharpSeek, frameSeek;
+    private Switch faceRestoreSwitch;
     private Bitmap currentBitmap, enhancedBitmap, originalCrop;
     private Uri cameraUri, currentVideoUri;
     private int scaleFactor = 2, profile = 0;
@@ -91,6 +93,7 @@ public class MainActivity extends Activity {
         editor.addView(section("MEJORA INTELIGENTE", "Pipeline local · la foto original no se modifica"), fixed(45));
         editor.addView(presets(), fixed(58));
         editor.addView(scaleControls(), fixed(48));
+        editor.addView(faceControls(), fixed(62));
         noiseSeek = addSlider(editor, "Reducir ruido", "Limpia grano y compresion", 18);
         detailSeek = addSlider(editor, "Recuperar detalle", "Textura natural sin halos", 64);
         sharpSeek = addSlider(editor, "Enfoque", "Define bordes y microcontraste", 58);
@@ -213,6 +216,25 @@ public class MainActivity extends Activity {
         return row;
     }
 
+    private View faceControls() {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(10), dp(4), dp(10), dp(4));
+        row.setBackground(round(panel2, 13));
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        TextView title = text("Rostro IA · CodeFormer", 13, ink);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        copy.addView(title, fixed(25));
+        copy.addView(text("Fidelidad 90% · puede reconstruir rasgos", 10, muted), fixed(23));
+        row.addView(copy, new LinearLayout.LayoutParams(0, -1, 1f));
+        faceRestoreSwitch = new Switch(this);
+        faceRestoreSwitch.setChecked(true);
+        faceRestoreSwitch.setContentDescription("Activar restauración facial generativa");
+        row.addView(faceRestoreSwitch, fixedWidth(55));
+        return row;
+    }
+
     private SeekBar addSlider(LinearLayout parent, String title, String hint, int value) {
         LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL); row.setOrientation(LinearLayout.VERTICAL);
         LinearLayout labels = new LinearLayout(this); labels.setGravity(Gravity.CENTER_VERTICAL);
@@ -283,8 +305,14 @@ public class MainActivity extends Activity {
             try {
                 VideoFrameProcessor.Info info = VideoFrameProcessor.inspect(this, uri);
                 VideoFrameProcessor.Selection selection = VideoFrameProcessor.bestFrameAcrossVideo(this, uri, info);
-                currentVideoInfo = info; videoDurationUs = info.durationUs; final Bitmap result = selection.bitmap; final int selectedProgress = (int) Math.max(0, Math.min(1000, selection.timeUs * 1000L / info.durationUs));
-                runOnUiThread(() -> { frameSeek.setProgress(selectedProgress); videoInfo.setText("Fotograma nítido exacto · " + Math.round(selectedProgress / 10f) + "% · " + info.durationLabel); showImage(result, result.getWidth() + " x " + result.getHeight() + " px · fotograma exacto " + (selection.frameIndex >= 0 ? selection.frameIndex : "")); });
+                Bitmap result;
+                try {
+                    result = TemporalFrameFusion.fuse(this, uri, selection, info);
+                } catch (Exception fusionError) {
+                    result = selection.bitmap;
+                }
+                currentVideoInfo = info; videoDurationUs = info.durationUs; final Bitmap fused = result; final int selectedProgress = (int) Math.max(0, Math.min(1000, selection.timeUs * 1000L / info.durationUs));
+                runOnUiThread(() -> { frameSeek.setProgress(selectedProgress); videoInfo.setText("Fusión temporal · " + Math.round(selectedProgress / 10f) + "% · " + info.durationLabel); showImage(fused, fused.getWidth() + " x " + fused.getHeight() + " px · 5 fotogramas alineados · base " + (selection.frameIndex >= 0 ? selection.frameIndex : "")); });
             } catch (Exception e) { runOnUiThread(() -> { currentVideoUri = null; status.setText("No se pudo leer ese video"); }); }
         });
     }
@@ -295,9 +323,16 @@ public class MainActivity extends Activity {
         executor.execute(() -> {
             try {
                 VideoFrameProcessor.Selection selection = VideoFrameProcessor.sharpestFrame(this, currentVideoUri, target, currentVideoInfo);
-                Bitmap frame = selection.bitmap;
+                Bitmap frame;
+                try {
+                    frame = TemporalFrameFusion.fuse(
+                            this, currentVideoUri, selection, currentVideoInfo);
+                } catch (Exception fusionError) {
+                    frame = selection.bitmap;
+                }
+                final Bitmap fused = frame;
                 final int exactProgress = (int) Math.max(0, Math.min(1000, selection.timeUs * 1000L / videoDurationUs));
-                runOnUiThread(() -> { loadingFrame = false; frameSeek.setProgress(exactProgress); videoInfo.setText("Mejor vecino · " + exactProgress / 10f + "% · fotograma " + (selection.frameIndex >= 0 ? selection.frameIndex : "exacto")); showImage(frame, frame.getWidth() + " x " + frame.getHeight() + " px · selección nítida real"); });
+                runOnUiThread(() -> { loadingFrame = false; frameSeek.setProgress(exactProgress); videoInfo.setText("Fusión temporal · " + exactProgress / 10f + "% · base " + (selection.frameIndex >= 0 ? selection.frameIndex : "exacta")); showImage(fused, fused.getWidth() + " x " + fused.getHeight() + " px · vecinos alineados y fusionados"); });
             } catch (Exception e) { runOnUiThread(() -> { loadingFrame = false; status.setText("No se pudo extraer el fotograma"); }); }
         });
     }
@@ -322,40 +357,47 @@ public class MainActivity extends Activity {
         if (currentBitmap == null) { toast(videoModeEnabled ? "Primero elige un video" : "Primero elige una foto"); return; }
         if (originalCrop != null && !originalCrop.isRecycled()) originalCrop.recycle(); originalCrop = cropView.crop();
         final Bitmap source = originalCrop; final int noise = noiseSeek.getProgress(), detail = detailSeek.getProgress(), sharp = sharpSeek.getProgress();
+        final boolean restoreFaces = faceRestoreSwitch.isChecked();
         enhanceButton.setEnabled(false); saveButton.setEnabled(false); enhanceButton.setText("Procesando...");
-        status.setText(videoModeEnabled ? "Real-ESRGAN sobre el fotograma exacto más nítido..." : "Ejecutando NAFNet deblur nativo...");
+        status.setText(videoModeEnabled ? "Real-ESRGAN sobre la fusión temporal..." : "Reconstruyendo detalle con Real-ESRGAN...");
         executor.execute(() -> {
             try {
-                Bitmap computed; String engine; Bitmap deblurred = null;
-                if (videoModeEnabled) {
+                Bitmap computed;
+                String engine;
+                try {
+                    computed = NativeRealEsrgan.enhance(
+                            MainActivity.this, source, scaleFactor, profile, noise, detail, sharp);
+                    engine = videoModeEnabled
+                            ? "fusión temporal + Real-ESRGAN"
+                            : "Real-ESRGAN nativo";
+                } catch (Exception nativeError) {
+                    computed = ImageEnhancer.enhance(
+                            source, scaleFactor, profile, noise, detail, sharp);
+                    engine = videoModeEnabled
+                            ? "fusión temporal + motor local"
+                            : "motor local de respaldo";
+                }
+                if (restoreFaces) {
                     try {
-                        computed = NativeRealEsrgan.enhance(MainActivity.this, source, scaleFactor, profile, noise, detail, sharp);
-                        engine = "fotograma exacto + Real-ESRGAN x4";
-                    } catch (Exception nativeError) {
-                        computed = ImageEnhancer.enhance(source, scaleFactor, profile, noise, detail, sharp);
-                        engine = "fotograma exacto + motor local";
-                    }
-                } else {
-                    try {
-                        deblurred = NativeNafNet.enhance(MainActivity.this, source);
-                        try {
-                            computed = NativeRealEsrgan.enhance(MainActivity.this, deblurred, scaleFactor, profile, noise, detail, sharp);
-                            engine = "NAFNet motion deblur + Real-ESRGAN";
-                        } catch (Exception upscaleError) {
-                            computed = ImageEnhancer.enhance(deblurred, scaleFactor, profile, noise, detail, sharp);
-                            engine = "NAFNet motion deblur + escalado local";
+                        CodeFormerFaceRestorer.Result restored =
+                                CodeFormerFaceRestorer.restore(
+                                        MainActivity.this,
+                                        computed,
+                                        percent -> runOnUiThread(() -> status.setText(
+                                                percent >= 0
+                                                        ? "Instalando CodeFormer · " + percent + "% · solo se descarga el modelo"
+                                                        : "Instalando CodeFormer · descargando modelo")));
+                        if (restored.bitmap != computed) {
+                            computed.recycle();
+                            computed = restored.bitmap;
                         }
-                    } catch (Exception nafError) {
-                        try {
-                            computed = NativeRealEsrgan.enhance(MainActivity.this, source, scaleFactor, profile, noise, detail, sharp);
-                            engine = "Real-ESRGAN nativo";
-                        } catch (Exception nativeError) {
-                            computed = ImageEnhancer.enhance(source, scaleFactor, profile, noise, detail, sharp);
-                            engine = "motor local de respaldo";
-                        }
+                        engine += restored.restoredFaces > 0
+                                ? " + CodeFormer 90% (" + restored.restoredFaces + " rostro)"
+                                : " · sin rostro detectable";
+                    } catch (Exception faceError) {
+                        engine += " · CodeFormer no disponible";
                     }
                 }
-                if (deblurred != null && deblurred != computed && !deblurred.isRecycled()) deblurred.recycle();
                 final Bitmap result = computed; final String engineName = engine;
                 runOnUiThread(() -> { enhancedBitmap = result; cropView.setComparison(originalCrop, result); compareButton.setVisibility(View.VISIBLE); compareLabel.setText("COMPARACION · arrastra"); enhanceButton.setText("Actualizar resultado"); enhanceButton.setEnabled(true); saveButton.setEnabled(true); resolution.setText(result.getWidth() + " x " + result.getHeight() + " px · resultado mejorado"); status.setText("Listo · " + engineName + " · puedes cambiar el recorte o abrir otro archivo"); });
             } catch (Exception e) { runOnUiThread(() -> { enhanceButton.setText("Mejorar con IA"); enhanceButton.setEnabled(true); status.setText("No se pudo procesar el archivo"); }); }

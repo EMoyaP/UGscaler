@@ -1,6 +1,24 @@
-<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
-    <path android:fillColor="#111713" android:pathData="M0,0h108v108h-108z" />
-    <path android:fillColor="#D6F36A" android:pathData="M18,18h72v72h-72z" />
-    <path android:fillColor="#111713" android:pathData="M32,31h10v26c0,8 4,12 12,12s12,-4 12,-12v-26h10v27c0,14 -8,21 -22,21s-22,-7 -22,-21z" />
-    <path android:fillColor="#111713" android:pathData="M72,31h8v49h-8z" />
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Dark launcher background -->
+    <path android:fillColor="#0D100F" android:pathData="M0,0h108v108h-108z" />
+
+    <!-- Camera body -->
+    <path android:fillColor="#D6F36A"
+        android:pathData="M16,35C16,31 19,28 23,28h10l6,-8h30l6,8h10c4,0 7,3 7,7v43c0,4 -3,7 -7,7H23c-4,0 -7,-3 -7,-7z" />
+    <path android:fillColor="#111713" android:pathData="M42,20h24l3,8H39z" />
+    <path android:fillColor="#111713" android:pathData="M25,35h10v5H25z" />
+
+    <!-- Before/after lens -->
+    <path android:fillColor="#111713" android:pathData="M54,37a21,21 0,1 0,0 42a21,21 0,1 0,0 -42z" />
+    <path android:fillColor="#7F8D82" android:fillAlpha="0.35"
+        android:pathData="M34,49h14v3H34zM33,56h17v3H33zM35,63h13v3H35z" />
+    <path android:fillColor="#D6F36A" android:fillAlpha="0.9" android:pathData="M54,39v38h2V39z" />
+    <path android:fillColor="#D6F36A" android:pathData="M63,48a10,10 0,1 0,0 20a10,10 0,1 0,0 -20z" />
+    <path android:fillColor="#111713" android:pathData="M63,53a5,5 0,1 0,0 10a5,5 0,1 0,0 -10z" />
+    <path android:fillColor="#D6F36A" android:pathData="M69,43h3v5h-3zM74,48h5v3h-5zM69,67h3v5h-3z" />
 </vector>

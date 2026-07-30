@@ -1,0 +1,33 @@
+UGSCALER NON-COMMERCIAL LICENSE 1.0
+
+Copyright (c) 2026 EMoyaP
+
+Permission is granted, free of charge, to any person obtaining a copy of the
+UGscaler source code and associated documentation files (the "Software"), to
+use, copy, study, modify, and distribute the Software for personal,
+educational, research, or other strictly non-commercial purposes, subject to
+the following conditions:
+
+1. The Software, or any derivative work based substantially on it, may not be
+   used for commercial advantage, commercial activity, or monetary compensation
+   without prior written permission from the copyright holder.
+
+2. This copyright notice, license, and attribution requirements must be kept in
+   all copies or substantial portions of the Software.
+
+3. Any public redistribution or derivative work must visibly acknowledge the
+   UGscaler project and link to its source repository when a repository URL is
+   available.
+
+4. Third-party components, models, binaries, and libraries included with the
+   Software remain subject to their own licenses. Their use is not relicensed
+   by this document. See THIRD_PARTY_NOTICES.md and the notices bundled in
+   app/src/main/assets/realesrgan/.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

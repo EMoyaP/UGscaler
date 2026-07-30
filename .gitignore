@@ -1,0 +1,15 @@
+# Android/Gradle generated files
+.gradle/
+build/
+app/build/
+local.properties
+*.iml
+.idea/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+
+# Keep the distributable APK requested for this project
+*.apk
+!UGscaler-debug.apk

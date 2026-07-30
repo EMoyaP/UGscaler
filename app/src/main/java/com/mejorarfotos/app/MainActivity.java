@@ -320,17 +320,29 @@ public class MainActivity extends Activity {
         if (originalCrop != null && !originalCrop.isRecycled()) originalCrop.recycle(); originalCrop = cropView.crop();
         final Bitmap source = originalCrop; final int noise = noiseSeek.getProgress(), detail = detailSeek.getProgress(), sharp = sharpSeek.getProgress();
         enhanceButton.setEnabled(false); saveButton.setEnabled(false); enhanceButton.setText("Procesando...");
-        status.setText(videoModeEnabled ? "Analizando fotogramas vecinos + Real-ESRGAN..." : "Deblur adaptativo + Real-ESRGAN nativo...");
+        status.setText(videoModeEnabled ? "NAFNet deblur + fotogramas vecinos..." : "Ejecutando NAFNet deblur nativo...");
         executor.execute(() -> {
             try {
-                Bitmap computed; String engine;
+                Bitmap computed; String engine; Bitmap deblurred = null;
                 try {
-                    computed = NativeRealEsrgan.enhance(MainActivity.this, source, scaleFactor, profile, noise, detail, sharp);
-                    engine = videoModeEnabled ? "pipeline temporal + Real-ESRGAN NCNN" : "deblur adaptativo + Real-ESRGAN NCNN";
-                } catch (Exception nativeError) {
-                    computed = ImageEnhancer.enhance(source, scaleFactor, profile, noise, detail, sharp);
-                    engine = videoModeEnabled ? "mejor fotograma + motor local" : "motor local de respaldo";
+                    deblurred = NativeNafNet.enhance(MainActivity.this, source);
+                    try {
+                        computed = NativeRealEsrgan.enhance(MainActivity.this, deblurred, scaleFactor, profile, noise, detail, sharp);
+                        engine = videoModeEnabled ? "NAFNet + fotograma temporal + Real-ESRGAN" : "NAFNet motion deblur + Real-ESRGAN";
+                    } catch (Exception upscaleError) {
+                        computed = ImageEnhancer.enhance(deblurred, scaleFactor, profile, noise, detail, sharp);
+                        engine = "NAFNet motion deblur + escalado local";
+                    }
+                } catch (Exception nafError) {
+                    try {
+                        computed = NativeRealEsrgan.enhance(MainActivity.this, source, scaleFactor, profile, noise, detail, sharp);
+                        engine = videoModeEnabled ? "fotograma temporal + Real-ESRGAN" : "Real-ESRGAN nativo";
+                    } catch (Exception nativeError) {
+                        computed = ImageEnhancer.enhance(source, scaleFactor, profile, noise, detail, sharp);
+                        engine = videoModeEnabled ? "mejor fotograma + motor local" : "motor local de respaldo";
+                    }
                 }
+                if (deblurred != null && deblurred != computed && !deblurred.isRecycled()) deblurred.recycle();
                 final Bitmap result = computed; final String engineName = engine;
                 runOnUiThread(() -> { enhancedBitmap = result; cropView.setComparison(originalCrop, result); compareButton.setVisibility(View.VISIBLE); compareLabel.setText("COMPARACION · arrastra"); enhanceButton.setText("Actualizar resultado"); enhanceButton.setEnabled(true); saveButton.setEnabled(true); resolution.setText(result.getWidth() + " x " + result.getHeight() + " px · resultado mejorado"); status.setText("Listo · " + engineName + " · puedes cambiar el recorte o abrir otro archivo"); });
             } catch (Exception e) { runOnUiThread(() -> { enhanceButton.setText("Mejorar con IA"); enhanceButton.setEnabled(true); status.setText("No se pudo procesar el archivo"); }); }

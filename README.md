@@ -9,7 +9,8 @@ UGscaler esta pensada para recuperar detalle despues de recortar una foto o sele
 - Mejora IA local sin subir imagenes ni videos a ningun servidor.
 - Ventanas independientes para Foto y Video.
 - Selector temporal de video con analisis de 7 fotogramas vecinos y eleccion automatica del mas nitido.
-- Backend nativo Real-ESRGAN/NCNN para ARM64.
+- NAFNet motion deblur en ONNX Runtime para ARM64, ejecutado por teselas con proteccion contra artefactos.
+- Backend nativo Real-ESRGAN/NCNN para ARM64 como segunda etapa de reconstruccion y escalado.
 - GPU Vulkan cuando esta disponible y fallback automatico a CPU.
 - Motor local de respaldo para dispositivos incompatibles.
 - Presets Auto, Retrato, Paisaje y Texto.
@@ -21,13 +22,13 @@ UGscaler esta pensada para recuperar detalle despues de recortar una foto o sele
 
 ## Pipeline de restauracion
 
-Para fotos se ejecuta un pre-procesado de deblur adaptativo y despues Real-ESRGAN para reconstruccion y escalado. Para video se extraen siete fotogramas alrededor del punto seleccionado, se puntua su nitidez local y se procesa el mejor candidato. Esta estrategia es ligera y funciona sin red, pero no sustituye a un modelo temporal completo.
+Para fotos se ejecuta NAFNet motion deblur por teselas y despues Real-ESRGAN para reconstruccion y escalado. Para video se escanea el origen para seleccionar un fotograma nitido, se aplica NAFNet al fotograma y despues se escala localmente. Esta estrategia funciona sin red, pero no sustituye a un modelo temporal completo como RVRT.
 
-Los proyectos de investigacion revisados para futuras variantes son [MISCFilter](https://github.com/ChengxuLiu/MISCFilter), [Restormer](https://github.com/swz30/Restormer), [NAFNet](https://github.com/megvii-research/NAFNet), [RVRT](https://github.com/JingyunLiang/RVRT), [VRT](https://github.com/JingyunLiang/VRT) y [BasicVSR++](https://github.com/ckkelvinchan/BasicVSR_PlusPlus). Sus pesos y runtimes no se incluyen en este APK porque requieren conversion, cuantizacion, memoria y licencias independientes. No se presentan como motores activos hasta superar esa integracion y QA en dispositivo.
+Los proyectos revisados para futuras variantes son [MISCFilter](https://github.com/ChengxuLiu/MISCFilter), [Restormer](https://github.com/swz30/Restormer), [RVRT](https://github.com/JingyunLiang/RVRT), [VRT](https://github.com/JingyunLiang/VRT) y [BasicVSR++](https://github.com/ckkelvinchan/BasicVSR_PlusPlus). NAFNet ya esta incluido en este APK; los demas requieren conversiones, cuantizacion, memoria y licencias independientes.
 
 ## Descargar
 
-La version actual es `1.1.1` y el APK esta en la raiz como [`UGscaler-v1.1.1.apk`](UGscaler-v1.1.1.apk).
+La version actual es `1.2.0` y el APK esta en la raiz como [`UGscaler-v1.2.0.apk`](UGscaler-v1.2.0.apk).
 
 Es una build debug para pruebas. Antes de distribuirla en Google Play habria que generar una build release firmada y completar la revision de licencias, privacidad y politicas de la tienda.
 
@@ -43,9 +44,9 @@ Requisitos:
 .\gradlew.bat assembleDebug
 ```
 
-El APK se genera en `app/build/outputs/apk/debug/UGscaler-v1.1.1.apk`.
+El APK se genera en `app/build/outputs/apk/debug/UGscaler-v1.2.0.apk`.
 
-El modelo y el backend ocupan aproximadamente 50 MB dentro del APK. En el primer uso se extraen al almacenamiento privado de la aplicacion.
+Los modelos y runtimes ocupan aproximadamente 100 MB dentro del APK. En el primer uso se extraen al almacenamiento privado de la aplicacion.
 
 ## Limitaciones conocidas
 

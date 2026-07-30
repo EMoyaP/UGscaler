@@ -56,6 +56,7 @@ public class MainActivity extends Activity {
     private Uri cameraUri, currentVideoUri;
     private int scaleFactor = 2, profile = 0;
     private long videoDurationUs;
+    private VideoFrameProcessor.Info currentVideoInfo;
     private boolean videoModeEnabled, loadingFrame;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
@@ -165,7 +166,7 @@ public class MainActivity extends Activity {
         LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(dp(4), 0, dp(4), 0);
         LinearLayout labels = new LinearLayout(this); labels.setGravity(Gravity.CENTER_VERTICAL);
         videoInfo = text("Video · buscando el mejor fotograma", 11, muted); labels.addView(videoInfo, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView hint = text("busqueda amplia", 10, accent); hint.setGravity(Gravity.RIGHT); labels.addView(hint, fixedWidth(105));
+        TextView hint = text("índice exacto", 10, accent); hint.setGravity(Gravity.RIGHT); labels.addView(hint, fixedWidth(105));
         box.addView(labels, fixed(22));
         frameSeek = new SeekBar(this); frameSeek.setMax(1000); frameSeek.setProgress(500); frameSeek.setContentDescription("Seleccionar fotograma del video");
         box.addView(frameSeek, fixed(28));
@@ -281,20 +282,22 @@ public class MainActivity extends Activity {
         executor.execute(() -> {
             try {
                 VideoFrameProcessor.Info info = VideoFrameProcessor.inspect(this, uri);
-                VideoFrameProcessor.Selection selection = VideoFrameProcessor.bestFrameAcrossVideo(this, uri, info.durationUs);
-                videoDurationUs = info.durationUs; final Bitmap result = selection.bitmap; final int selectedProgress = (int) Math.max(0, Math.min(1000, selection.timeUs * 1000L / info.durationUs));
-                runOnUiThread(() -> { frameSeek.setProgress(selectedProgress); videoInfo.setText("Mejor fotograma automatico · " + Math.round(selectedProgress / 10f) + "% · " + info.durationLabel); showImage(result, result.getWidth() + " x " + result.getHeight() + " px · fotograma de video"); });
+                VideoFrameProcessor.Selection selection = VideoFrameProcessor.bestFrameAcrossVideo(this, uri, info);
+                currentVideoInfo = info; videoDurationUs = info.durationUs; final Bitmap result = selection.bitmap; final int selectedProgress = (int) Math.max(0, Math.min(1000, selection.timeUs * 1000L / info.durationUs));
+                runOnUiThread(() -> { frameSeek.setProgress(selectedProgress); videoInfo.setText("Fotograma nítido exacto · " + Math.round(selectedProgress / 10f) + "% · " + info.durationLabel); showImage(result, result.getWidth() + " x " + result.getHeight() + " px · fotograma exacto " + (selection.frameIndex >= 0 ? selection.frameIndex : "")); });
             } catch (Exception e) { runOnUiThread(() -> { currentVideoUri = null; status.setText("No se pudo leer ese video"); }); }
         });
     }
 
     private void loadVideoFrame(int progress) {
-        if (loadingFrame || currentVideoUri == null || videoDurationUs <= 0) return;
+        if (loadingFrame || currentVideoUri == null || videoDurationUs <= 0 || currentVideoInfo == null) return;
         loadingFrame = true; status.setText("Buscando el fotograma mas nitido..."); final long target = videoDurationUs * progress / 1000L;
         executor.execute(() -> {
             try {
-                Bitmap frame = VideoFrameProcessor.sharpestFrame(this, currentVideoUri, target, videoDurationUs);
-                runOnUiThread(() -> { loadingFrame = false; videoInfo.setText("Fotograma " + progress / 10f + "% · ventana amplia ±10"); showImage(frame, frame.getWidth() + " x " + frame.getHeight() + " px · fotograma seleccionado"); });
+                VideoFrameProcessor.Selection selection = VideoFrameProcessor.sharpestFrame(this, currentVideoUri, target, currentVideoInfo);
+                Bitmap frame = selection.bitmap;
+                final int exactProgress = (int) Math.max(0, Math.min(1000, selection.timeUs * 1000L / videoDurationUs));
+                runOnUiThread(() -> { loadingFrame = false; frameSeek.setProgress(exactProgress); videoInfo.setText("Mejor vecino · " + exactProgress / 10f + "% · fotograma " + (selection.frameIndex >= 0 ? selection.frameIndex : "exacto")); showImage(frame, frame.getWidth() + " x " + frame.getHeight() + " px · selección nítida real"); });
             } catch (Exception e) { runOnUiThread(() -> { loadingFrame = false; status.setText("No se pudo extraer el fotograma"); }); }
         });
     }
@@ -320,26 +323,36 @@ public class MainActivity extends Activity {
         if (originalCrop != null && !originalCrop.isRecycled()) originalCrop.recycle(); originalCrop = cropView.crop();
         final Bitmap source = originalCrop; final int noise = noiseSeek.getProgress(), detail = detailSeek.getProgress(), sharp = sharpSeek.getProgress();
         enhanceButton.setEnabled(false); saveButton.setEnabled(false); enhanceButton.setText("Procesando...");
-        status.setText(videoModeEnabled ? "NAFNet deblur + fotogramas vecinos..." : "Ejecutando NAFNet deblur nativo...");
+        status.setText(videoModeEnabled ? "Real-ESRGAN sobre el fotograma exacto más nítido..." : "Ejecutando NAFNet deblur nativo...");
         executor.execute(() -> {
             try {
                 Bitmap computed; String engine; Bitmap deblurred = null;
-                try {
-                    deblurred = NativeNafNet.enhance(MainActivity.this, source);
-                    try {
-                        computed = NativeRealEsrgan.enhance(MainActivity.this, deblurred, scaleFactor, profile, noise, detail, sharp);
-                        engine = videoModeEnabled ? "NAFNet + fotograma temporal + Real-ESRGAN" : "NAFNet motion deblur + Real-ESRGAN";
-                    } catch (Exception upscaleError) {
-                        computed = ImageEnhancer.enhance(deblurred, scaleFactor, profile, noise, detail, sharp);
-                        engine = "NAFNet motion deblur + escalado local";
-                    }
-                } catch (Exception nafError) {
+                if (videoModeEnabled) {
                     try {
                         computed = NativeRealEsrgan.enhance(MainActivity.this, source, scaleFactor, profile, noise, detail, sharp);
-                        engine = videoModeEnabled ? "fotograma temporal + Real-ESRGAN" : "Real-ESRGAN nativo";
+                        engine = "fotograma exacto + Real-ESRGAN x4";
                     } catch (Exception nativeError) {
                         computed = ImageEnhancer.enhance(source, scaleFactor, profile, noise, detail, sharp);
-                        engine = videoModeEnabled ? "mejor fotograma + motor local" : "motor local de respaldo";
+                        engine = "fotograma exacto + motor local";
+                    }
+                } else {
+                    try {
+                        deblurred = NativeNafNet.enhance(MainActivity.this, source);
+                        try {
+                            computed = NativeRealEsrgan.enhance(MainActivity.this, deblurred, scaleFactor, profile, noise, detail, sharp);
+                            engine = "NAFNet motion deblur + Real-ESRGAN";
+                        } catch (Exception upscaleError) {
+                            computed = ImageEnhancer.enhance(deblurred, scaleFactor, profile, noise, detail, sharp);
+                            engine = "NAFNet motion deblur + escalado local";
+                        }
+                    } catch (Exception nafError) {
+                        try {
+                            computed = NativeRealEsrgan.enhance(MainActivity.this, source, scaleFactor, profile, noise, detail, sharp);
+                            engine = "Real-ESRGAN nativo";
+                        } catch (Exception nativeError) {
+                            computed = ImageEnhancer.enhance(source, scaleFactor, profile, noise, detail, sharp);
+                            engine = "motor local de respaldo";
+                        }
                     }
                 }
                 if (deblurred != null && deblurred != computed && !deblurred.isRecycled()) deblurred.recycle();
@@ -362,7 +375,7 @@ public class MainActivity extends Activity {
     private void setVideoMode(boolean enabled) { videoModeEnabled = enabled; refreshModeUi(); }
     private void refreshModeUi() { if (photoMode == null) return; style(photoMode, !videoModeEnabled); style(videoMode, videoModeEnabled); videoControlsView.setVisibility(videoModeEnabled ? View.VISIBLE : View.GONE); frameSeek.setVisibility(videoModeEnabled ? View.VISIBLE : View.GONE); videoInfo.setVisibility(videoModeEnabled ? View.VISIBLE : View.GONE); saveButton.setText(videoModeEnabled ? "Exportar fotograma" : "Exportar JPG"); }
 
-    private void clearEditor() { currentVideoUri = null; videoDurationUs = 0; loadingFrame = false; recycleState(); if (cropView != null) { cropView.setBitmap(null); cropView.showFullImage(); } compareButton.setVisibility(View.GONE); saveButton.setEnabled(false); status.setText("Listo para mejorar · elige una foto o un video"); resolution.setText("Salida estimada · todavia no procesada"); videoInfo.setText("Video · buscando el mejor fotograma"); }
+    private void clearEditor() { currentVideoUri = null; currentVideoInfo = null; videoDurationUs = 0; loadingFrame = false; recycleState(); if (cropView != null) { cropView.setBitmap(null); cropView.showFullImage(); } compareButton.setVisibility(View.GONE); saveButton.setEnabled(false); status.setText("Listo para mejorar · elige una foto o un video"); resolution.setText("Salida estimada · todavia no procesada"); videoInfo.setText("Video · buscando el mejor fotograma"); }
     private void recycleState() { if (currentBitmap != null && !currentBitmap.isRecycled()) currentBitmap.recycle(); if (enhancedBitmap != null && !enhancedBitmap.isRecycled()) enhancedBitmap.recycle(); if (originalCrop != null && !originalCrop.isRecycled()) originalCrop.recycle(); currentBitmap = null; enhancedBitmap = null; originalCrop = null; }
 
     @Override public void onBackPressed() { if (currentBitmap != null || currentVideoUri != null) clearEditor(); else super.onBackPressed(); }

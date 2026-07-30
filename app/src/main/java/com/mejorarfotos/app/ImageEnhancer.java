@@ -19,6 +19,15 @@ public final class ImageEnhancer {
         return restore(scaled, profile, noise / 100f, detail / 100f, sharpen / 100f);
     }
 
+    /** Mild deblur pre-pass used before the neural model. It does not replace a true motion-deblur model. */
+    public static Bitmap prepareForAi(Bitmap input, int profile, int noise, int detail, int sharpen) {
+        Bitmap copy = input.copy(Bitmap.Config.ARGB_8888, false);
+        float safeNoise = Math.min(0.55f, noise / 100f * .75f);
+        float safeDetail = Math.min(0.62f, detail / 100f * .72f);
+        float safeSharpen = Math.min(0.68f, sharpen / 100f * .78f);
+        return restore(copy, profile, safeNoise, safeDetail, safeSharpen);
+    }
+
     private static Bitmap fit(Bitmap source, int longestSide) {
         int longest = Math.max(source.getWidth(), source.getHeight());
         if (longest <= longestSide) return source;

@@ -9,7 +9,6 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
 
 /** Runs the bundled ARM64 Real-ESRGAN NCNN backend without a network connection. */
 public final class NativeRealEsrgan {
@@ -25,12 +24,13 @@ public final class NativeRealEsrgan {
         return false;
     }
 
-    public static Bitmap enhance(Context context, Bitmap input, int outputScale) throws Exception {
+    public static Bitmap enhance(Context context, Bitmap input, int outputScale, int profile, int noise, int detail, int sharpen) throws Exception {
         if (!isSupportedDevice()) throw new UnsupportedOperationException("Real-ESRGAN requiere ARM64");
         File root = prepare(context);
         File inputFile = File.createTempFile("realesrgan-in-", ".png", context.getCacheDir());
         File outputFile = File.createTempFile("realesrgan-out-", ".png", context.getCacheDir());
-        Bitmap working = fit(input, outputScale >= 4 ? 1000 : 1250);
+        Bitmap prepared = ImageEnhancer.prepareForAi(input, profile, noise, detail, sharpen);
+        Bitmap working = fit(prepared, outputScale >= 4 ? 1000 : 1250);
         try {
             try (OutputStream stream = new FileOutputStream(inputFile)) {
                 if (!working.compress(Bitmap.CompressFormat.PNG, 100, stream)) throw new Exception("No se pudo preparar la imagen");
@@ -44,7 +44,7 @@ public final class NativeRealEsrgan {
                     "; " + quote(executable.getAbsolutePath()) +
                     " -i " + quote(inputFile.getAbsolutePath()) +
                     " -o " + quote(outputFile.getAbsolutePath()) +
-                    " -m " + quote(model.getAbsolutePath()) + " -s 4 -g 0";
+                    " -m " + quote(model.getAbsolutePath()) + " -s 4 -t 256 -j 1:2:2 -g 0";
             int exit = run(command);
             if (exit != 0 || !outputFile.exists()) {
                 if (outputFile.exists()) outputFile.delete();
@@ -60,7 +60,8 @@ public final class NativeRealEsrgan {
             }
             return result;
         } finally {
-            if (working != input && !working.isRecycled()) working.recycle();
+            if (working != prepared && !working.isRecycled()) working.recycle();
+            if (!prepared.isRecycled()) prepared.recycle();
             inputFile.delete(); outputFile.delete();
         }
     }

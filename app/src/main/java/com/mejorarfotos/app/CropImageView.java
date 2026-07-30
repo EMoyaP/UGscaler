@@ -62,7 +62,7 @@ public class CropImageView extends View {
             paint.setColor(Color.rgb(161, 174, 164));
             paint.setTextSize(dp(16));
             paint.setTextAlign(Paint.Align.CENTER);
-            canvas.drawText("Elige una foto para empezar", getWidth() / 2f, getHeight() / 2f, paint);
+            canvas.drawText("Elige una foto o un video para empezar", getWidth() / 2f, getHeight() / 2f, paint);
             return;
         }
         scale = Math.min(getWidth() / (float) bitmap.getWidth(), getHeight() / (float) bitmap.getHeight());

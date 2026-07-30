@@ -164,8 +164,8 @@ public class MainActivity extends Activity {
     private View videoControls() {
         LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(dp(4), 0, dp(4), 0);
         LinearLayout labels = new LinearLayout(this); labels.setGravity(Gravity.CENTER_VERTICAL);
-        videoInfo = text("Video · elige un fotograma", 11, muted); labels.addView(videoInfo, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView hint = text("ventana temporal", 10, accent); hint.setGravity(Gravity.RIGHT); labels.addView(hint, fixedWidth(105));
+        videoInfo = text("Video · buscando el mejor fotograma", 11, muted); labels.addView(videoInfo, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView hint = text("busqueda amplia", 10, accent); hint.setGravity(Gravity.RIGHT); labels.addView(hint, fixedWidth(105));
         box.addView(labels, fixed(22));
         frameSeek = new SeekBar(this); frameSeek.setMax(1000); frameSeek.setProgress(500); frameSeek.setContentDescription("Seleccionar fotograma del video");
         box.addView(frameSeek, fixed(28));
@@ -281,9 +281,9 @@ public class MainActivity extends Activity {
         executor.execute(() -> {
             try {
                 VideoFrameProcessor.Info info = VideoFrameProcessor.inspect(this, uri);
-                Bitmap frame = VideoFrameProcessor.sharpestFrame(this, uri, info.durationUs / 2, info.durationUs);
-                videoDurationUs = info.durationUs; final Bitmap result = frame;
-                runOnUiThread(() -> { frameSeek.setProgress(500); videoInfo.setText("Fotograma central · " + info.durationLabel); showImage(result, result.getWidth() + " x " + result.getHeight() + " px · fotograma de video"); });
+                VideoFrameProcessor.Selection selection = VideoFrameProcessor.bestFrameAcrossVideo(this, uri, info.durationUs);
+                videoDurationUs = info.durationUs; final Bitmap result = selection.bitmap; final int selectedProgress = (int) Math.max(0, Math.min(1000, selection.timeUs * 1000L / info.durationUs));
+                runOnUiThread(() -> { frameSeek.setProgress(selectedProgress); videoInfo.setText("Mejor fotograma automatico · " + Math.round(selectedProgress / 10f) + "% · " + info.durationLabel); showImage(result, result.getWidth() + " x " + result.getHeight() + " px · fotograma de video"); });
             } catch (Exception e) { runOnUiThread(() -> { currentVideoUri = null; status.setText("No se pudo leer ese video"); }); }
         });
     }
@@ -294,7 +294,7 @@ public class MainActivity extends Activity {
         executor.execute(() -> {
             try {
                 Bitmap frame = VideoFrameProcessor.sharpestFrame(this, currentVideoUri, target, videoDurationUs);
-                runOnUiThread(() -> { loadingFrame = false; videoInfo.setText("Fotograma " + progress / 10f + "% · ventana ±3"); showImage(frame, frame.getWidth() + " x " + frame.getHeight() + " px · fotograma seleccionado"); });
+                runOnUiThread(() -> { loadingFrame = false; videoInfo.setText("Fotograma " + progress / 10f + "% · ventana amplia ±10"); showImage(frame, frame.getWidth() + " x " + frame.getHeight() + " px · fotograma seleccionado"); });
             } catch (Exception e) { runOnUiThread(() -> { loadingFrame = false; status.setText("No se pudo extraer el fotograma"); }); }
         });
     }
@@ -350,7 +350,7 @@ public class MainActivity extends Activity {
     private void setVideoMode(boolean enabled) { videoModeEnabled = enabled; refreshModeUi(); }
     private void refreshModeUi() { if (photoMode == null) return; style(photoMode, !videoModeEnabled); style(videoMode, videoModeEnabled); videoControlsView.setVisibility(videoModeEnabled ? View.VISIBLE : View.GONE); frameSeek.setVisibility(videoModeEnabled ? View.VISIBLE : View.GONE); videoInfo.setVisibility(videoModeEnabled ? View.VISIBLE : View.GONE); saveButton.setText(videoModeEnabled ? "Exportar fotograma" : "Exportar JPG"); }
 
-    private void clearEditor() { currentVideoUri = null; videoDurationUs = 0; loadingFrame = false; recycleState(); if (cropView != null) { cropView.setBitmap(null); cropView.showFullImage(); } compareButton.setVisibility(View.GONE); saveButton.setEnabled(false); status.setText("Listo para mejorar · elige una foto o un video"); resolution.setText("Salida estimada · todavia no procesada"); videoInfo.setText("Video · elige un fotograma"); }
+    private void clearEditor() { currentVideoUri = null; videoDurationUs = 0; loadingFrame = false; recycleState(); if (cropView != null) { cropView.setBitmap(null); cropView.showFullImage(); } compareButton.setVisibility(View.GONE); saveButton.setEnabled(false); status.setText("Listo para mejorar · elige una foto o un video"); resolution.setText("Salida estimada · todavia no procesada"); videoInfo.setText("Video · buscando el mejor fotograma"); }
     private void recycleState() { if (currentBitmap != null && !currentBitmap.isRecycled()) currentBitmap.recycle(); if (enhancedBitmap != null && !enhancedBitmap.isRecycled()) enhancedBitmap.recycle(); if (originalCrop != null && !originalCrop.isRecycled()) originalCrop.recycle(); currentBitmap = null; enhancedBitmap = null; originalCrop = null; }
 
     @Override public void onBackPressed() { if (currentBitmap != null || currentVideoUri != null) clearEditor(); else super.onBackPressed(); }

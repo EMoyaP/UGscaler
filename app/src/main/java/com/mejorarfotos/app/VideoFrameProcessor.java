@@ -13,6 +13,12 @@ public final class VideoFrameProcessor {
         Info(long durationUs) { this.durationUs = durationUs; this.durationLabel = format(durationUs); }
     }
 
+    public static final class Selection {
+        public final Bitmap bitmap;
+        public final long timeUs;
+        Selection(Bitmap bitmap, long timeUs) { this.bitmap = bitmap; this.timeUs = timeUs; }
+    }
+
     private VideoFrameProcessor() {}
 
     public static Info inspect(Context context, Uri uri) throws Exception {
@@ -30,8 +36,10 @@ public final class VideoFrameProcessor {
         Bitmap best = null; double bestScore = -1;
         try {
             retriever.setDataSource(context, uri);
-            long span = Math.min(220_000L, Math.max(33_000L, durationUs / 80L));
-            for (int i = -3; i <= 3; i++) {
+            // A narrow 7-frame window missed the sharp moment in short, fast phone videos.
+            // Search a wider temporal neighbourhood while keeping memory bounded.
+            long span = Math.min(160_000L, Math.max(40_000L, durationUs / 40L));
+            for (int i = -10; i <= 10; i++) {
                 long time = Math.max(0, Math.min(durationUs - 1, targetUs + i * span));
                 Bitmap candidate = retriever.getFrameAtTime(time, MediaMetadataRetriever.OPTION_CLOSEST);
                 if (candidate == null) continue;
@@ -42,6 +50,27 @@ public final class VideoFrameProcessor {
         } finally { retriever.release(); }
         if (best == null) throw new Exception("El video no contiene fotogramas legibles");
         return best;
+    }
+
+    /** Finds a good starting frame by scanning the complete source video. */
+    public static Selection bestFrameAcrossVideo(Context context, Uri uri, long durationUs) throws Exception {
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        Bitmap best = null; double bestScore = -1;
+        long bestTimeUs = 0;
+        try {
+            retriever.setDataSource(context, uri);
+            int samples = 32;
+            for (int i = 0; i < samples; i++) {
+                long time = durationUs <= 1 ? 0 : (durationUs - 1) * i / (samples - 1L);
+                Bitmap candidate = retriever.getFrameAtTime(time, MediaMetadataRetriever.OPTION_CLOSEST);
+                if (candidate == null) continue;
+                double score = sharpness(candidate);
+                if (score > bestScore) { if (best != null) best.recycle(); best = candidate; bestScore = score; bestTimeUs = time; }
+                else candidate.recycle();
+            }
+        } finally { retriever.release(); }
+        if (best == null) throw new Exception("El video no contiene fotogramas legibles");
+        return new Selection(best, bestTimeUs);
     }
 
     /** Variance of a small Laplacian approximation; higher means more local detail. */

@@ -27,7 +27,7 @@ Los proyectos de investigacion revisados para futuras variantes son [MISCFilter]
 
 ## Descargar
 
-El APK de demostracion esta en la raiz como [`UGscaler-debug.apk`](UGscaler-debug.apk).
+La version actual es `1.1.0` y el APK de demostracion esta en la raiz como [`UGscaler-v1.1.0-debug.apk`](UGscaler-v1.1.0-debug.apk).
 
 Es una build debug para pruebas. Antes de distribuirla en Google Play habria que generar una build release firmada y completar la revision de licencias, privacidad y politicas de la tienda.
 
@@ -43,7 +43,7 @@ Requisitos:
 .\gradlew.bat assembleDebug
 ```
 
-El APK se genera en `app/build/outputs/apk/debug/app-debug.apk`.
+El APK se genera en `app/build/outputs/apk/debug/UGscaler-v1.1.0-debug.apk`.
 
 El modelo y el backend ocupan aproximadamente 50 MB dentro del APK. En el primer uso se extraen al almacenamiento privado de la aplicacion.
 

@@ -5,7 +5,7 @@ plugins {
 
 android { namespace 'com.mejorarfotos.app'; compileSdk 36
     defaultConfig {
-        applicationId 'com.mejorarfotos.app'; minSdk 26; targetSdk 36; versionCode 11; versionName '1.6.0'
+        applicationId 'com.mejorarfotos.app'; minSdk 26; targetSdk 36; versionCode 12; versionName '1.6.1'
         // El Redmi Note 13 Pro+ es ARM64. Evitamos incluir bibliotecas de 32 bits
         // que no puede usar y reducimos significativamente el tamaño de la APK.
         ndk { abiFilters 'arm64-v8a' }
@@ -28,6 +28,13 @@ android { namespace 'com.mejorarfotos.app'; compileSdk 36
     }
     androidResources {
         ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~:contours.tfl'
+    }
+    packaging {
+        jniLibs {
+            // Real-ESRGAN is installed by Android in the read-only native library
+            // directory. Android 10+ forbids executing binaries copied to filesDir.
+            useLegacyPackaging = true
+        }
     }
 }
 

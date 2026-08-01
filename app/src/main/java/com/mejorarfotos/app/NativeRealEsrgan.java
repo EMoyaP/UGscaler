@@ -16,6 +16,8 @@ import java.util.List;
 public final class NativeRealEsrgan {
     private static final String ASSET_ROOT = "realesrgan";
     private static final String MODEL = "models-Real-ESRGAN";
+    private static final String EXECUTABLE = "librealsr_ncnn_exec.so";
+    private static final String NCNN_LIBRARY = "libncnn.so";
     private static final Object LOCK = new Object();
     private static volatile Process activeProcess;
 
@@ -59,7 +61,7 @@ public final class NativeRealEsrgan {
                 throw new Exception("No se pudo preparar la salida temporal");
             }
 
-            File executable = new File(root, "realsr-ncnn");
+            File executable = installedNativeFile(context, EXECUTABLE);
             File model = new File(root, MODEL);
             int exit = run(root, executable, model, inputFile, outputFile, false);
             if (Thread.currentThread().isInterrupted()) {
@@ -116,11 +118,14 @@ public final class NativeRealEsrgan {
         command.add("-g"); command.add(cpu ? "-1" : "0");
 
         File log = new File(root, "last-run.log");
-        Process process = new ProcessBuilder(command)
+        ProcessBuilder builder = new ProcessBuilder(command)
                 .directory(root)
                 .redirectErrorStream(true)
-                .redirectOutput(log)
-                .start();
+                .redirectOutput(log);
+        // The executable depends on libncnn.so. Both files are installed together
+        // by PackageManager, outside the writable app home directory.
+        builder.environment().put("LD_LIBRARY_PATH", executable.getParent());
+        Process process = builder.start();
         activeProcess = process;
         try {
             return process.waitFor();
@@ -135,18 +140,38 @@ public final class NativeRealEsrgan {
     private static File prepare(Context context) throws Exception {
         File root = new File(context.getFilesDir(), ASSET_ROOT);
         synchronized (LOCK) {
-            File executable = new File(root, "realsr-ncnn");
+            removeLegacyExecutables(root);
+            File executable = installedNativeFile(context, EXECUTABLE);
+            File ncnn = installedNativeFile(context, NCNN_LIBRARY);
             File model = new File(root, MODEL + "/x4.bin");
-            if (executable.exists()
-                    && model.exists()
-                    && executable.length() > 7_000_000
-                    && model.length() > 30_000_000) {
-                executable.setExecutable(true, true);
+            if (!executable.isFile() || executable.length() < 7_000_000L
+                    || !ncnn.isFile() || ncnn.length() < 10_000_000L) {
+                throw new Exception("El motor Real-ESRGAN no est\u00e1 instalado correctamente");
+            }
+            if (model.exists() && model.length() > 30_000_000L) {
                 return root;
             }
             copyTree(context, ASSET_ROOT, root);
-            executable.setExecutable(true, true);
+            if (!model.exists() || model.length() < 30_000_000L) {
+                throw new Exception("No se pudo instalar el modelo Real-ESRGAN");
+            }
             return root;
+        }
+    }
+
+    private static File installedNativeFile(Context context, String name) {
+        return new File(context.getApplicationInfo().nativeLibraryDir, name);
+    }
+
+    private static void removeLegacyExecutables(File root) {
+        // Versions <= 1.6.0 copied these files to filesDir and attempted to execute
+        // them there. Remove only those exact obsolete files during migration.
+        File[] obsolete = {
+                new File(root, "realsr-ncnn"),
+                new File(root, "libncnn.so")
+        };
+        for (File file : obsolete) {
+            if (file.isFile()) file.delete();
         }
     }
 

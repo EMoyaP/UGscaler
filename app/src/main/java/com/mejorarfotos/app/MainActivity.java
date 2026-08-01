@@ -17,6 +17,7 @@ import android.graphics.drawable.ColorDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.CancellationSignal;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
@@ -35,10 +36,29 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.annotation.NonNull;
+import androidx.credentials.ClearCredentialStateRequest;
+import androidx.credentials.Credential;
+import androidx.credentials.CredentialManager;
+import androidx.credentials.CredentialManagerCallback;
+import androidx.credentials.CustomCredential;
+import androidx.credentials.GetCredentialRequest;
+import androidx.credentials.GetCredentialResponse;
+import androidx.credentials.exceptions.ClearCredentialException;
+import androidx.credentials.exceptions.GetCredentialException;
+import androidx.credentials.exceptions.GetCredentialCancellationException;
+import androidx.credentials.exceptions.NoCredentialException;
+import androidx.core.content.ContextCompat;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.exifinterface.media.ExifInterface;
+
+import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential;
+import com.google.firebase.auth.AuthCredential;
+import com.google.firebase.auth.FirebaseAuth;
+import com.google.firebase.auth.FirebaseUser;
+import com.google.firebase.auth.GoogleAuthProvider;
 
 import java.io.File;
 import java.io.InputStream;
@@ -76,12 +96,20 @@ public class MainActivity extends Activity {
     private Button cropButton;
     private Button enhanceButton;
     private Button newProjectButton;
+    private Button localModeButton;
+    private Button generativeModeButton;
     private TextView status;
     private TextView dimensions;
     private TextView percentText;
     private TextView viewerBadge;
     private ProgressBar progressBar;
     private LinearLayout actionRow;
+    private LinearLayout generativePanel;
+    private TextView accountStatus;
+    private Button googleAccountButton;
+    private TextView engineDescription;
+    private FirebaseAuth firebaseAuth;
+    private CredentialManager credentialManager;
 
     private Bitmap originalBitmap;
     private Bitmap acceptedCrop;
@@ -93,11 +121,17 @@ public class MainActivity extends Activity {
     private Future<?> activeTask;
     private boolean processing;
     private boolean pendingEnhance;
+    private boolean pendingGenerativeAfterSignIn;
+    private boolean signingIn;
+    private boolean generativeMode;
+    private boolean resultWasGenerative;
     private volatile boolean destroyed;
     private int progressValue;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        firebaseAuth = FirebaseAuth.getInstance();
+        credentialManager = CredentialManager.create(this);
         getWindow().setStatusBarColor(background);
         getWindow().setNavigationBarColor(background);
         buildUi();
@@ -118,7 +152,10 @@ public class MainActivity extends Activity {
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(0, dp(6), 0, dp(12));
-        content.addView(intro(), spacedWrap(12));
+        content.addView(intro(), spacedWrap(10));
+        content.addView(modeTabs(), spacedFixed(52, 8));
+        generativePanel = generativeSettings();
+        content.addView(generativePanel, spacedWrap(10));
         content.addView(workspace(), spacedFixed(workspaceHeightDp(), 10));
         content.addView(fileAction(), spacedFixed(50, 10));
 
@@ -158,14 +195,14 @@ public class MainActivity extends Activity {
         progressCard.addView(dimensions);
         content.addView(progressCard, spacedWrap(8));
 
-        TextView privacy = text(
+        engineDescription = text(
                 "RT-Focuser elimina desenfoque y Real-ESRGAN recupera resolución. "
                         + "La escala se adapta automáticamente a la foto y al teléfono.",
                 11,
                 muted);
-        privacy.setGravity(Gravity.CENTER);
-        privacy.setPadding(dp(10), dp(7), dp(10), dp(5));
-        content.addView(privacy, spacedWrap(0));
+        engineDescription.setGravity(Gravity.CENTER);
+        engineDescription.setPadding(dp(10), dp(7), dp(10), dp(5));
+        content.addView(engineDescription, spacedWrap(0));
 
         scroll.addView(content, new ScrollViewLayoutParams(-1, -2));
         root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
@@ -177,6 +214,7 @@ public class MainActivity extends Activity {
             return insets;
         });
         ViewCompat.requestApplyInsets(root);
+        setGenerativeMode(false);
         refreshActions();
     }
 
@@ -187,7 +225,7 @@ public class MainActivity extends Activity {
         titleBox.setOrientation(LinearLayout.VERTICAL);
         TextView brand = text("UGscaler", 21, ink);
         brand.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        TextView label = text("RESTAURACIÓN FOTOGRÁFICA · IA LOCAL", 9, cyan);
+        TextView label = text("RESTAURACIÓN FOTOGRÁFICA · IA LOCAL + GOOGLE", 9, cyan);
         label.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         titleBox.addView(brand);
         titleBox.addView(label);
@@ -211,6 +249,218 @@ public class MainActivity extends Activity {
         box.addView(title);
         box.addView(subtitle);
         return box;
+    }
+
+    private View modeTabs() {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        localModeButton = button("IA local", true);
+        generativeModeButton = button("IA generativa", false);
+        row.addView(localModeButton, weight(1f, 0, 7));
+        row.addView(generativeModeButton, weight(1f, 0, 0));
+        localModeButton.setOnClickListener(v -> setGenerativeMode(false));
+        generativeModeButton.setOnClickListener(v -> setGenerativeMode(true));
+        return row;
+    }
+
+    private LinearLayout generativeSettings() {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(13), dp(11), dp(13), dp(11));
+        card.setBackground(round(Color.rgb(35, 35, 27), 14));
+
+        TextView title = text("NANO BANANA 2 · CUENTA GOOGLE", 11, accent);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        card.addView(title);
+        TextView warning = text(
+                "La foto se envía a Google solo al usar este modo. La IA puede reconstruir "
+                        + "detalles plausibles que no coincidan exactamente con la realidad.",
+                11,
+                ink);
+        warning.setPadding(0, dp(4), 0, dp(8));
+        card.addView(warning);
+
+        accountStatus = text("No has iniciado sesión", 12, muted);
+        accountStatus.setPadding(dp(12), 0, dp(12), 0);
+        accountStatus.setBackground(round(panel, 12));
+        accountStatus.setContentDescription("Estado de la cuenta Google");
+        card.addView(accountStatus, fixed(44));
+
+        googleAccountButton = button("Continuar con Google", true);
+        LinearLayout.LayoutParams accountButtonParams = fixed(48);
+        accountButtonParams.topMargin = dp(8);
+        card.addView(googleAccountButton, accountButtonParams);
+        TextView quotaNotice = text(
+                "Iniciar sesión no activa pagos. La mejora generativa depende de la cuota cloud del proyecto.",
+                10,
+                muted);
+        quotaNotice.setPadding(dp(2), dp(7), dp(2), 0);
+        quotaNotice.setGravity(Gravity.CENTER);
+        card.addView(quotaNotice);
+        googleAccountButton.setOnClickListener(v -> {
+            if (firebaseAuth.getCurrentUser() == null) signInWithGoogle(false);
+            else signOutGoogle();
+        });
+        updateGoogleAccountUi();
+        return card;
+    }
+
+    private void setGenerativeMode(boolean enabled) {
+        if (processing) {
+            toast("Espera a que termine el procesamiento");
+            return;
+        }
+        generativeMode = enabled;
+        if (generativePanel != null) {
+            generativePanel.setVisibility(enabled ? View.VISIBLE : View.GONE);
+        }
+        if (localModeButton != null) style(localModeButton, !enabled);
+        if (generativeModeButton != null) style(generativeModeButton, enabled);
+        if (enhanceButton != null) {
+            enhanceButton.setText(enabled ? "Mejorar con IA generativa" : "Mejorar con IA");
+        }
+        if (engineDescription != null) {
+            engineDescription.setText(enabled
+                    ? "RT-Focuser prepara el recorte y Nano Banana reconstruye el detalle. "
+                            + "Requiere Internet, una cuenta Google y cuota disponible."
+                    : "RT-Focuser elimina desenfoque y Real-ESRGAN recupera resolución. "
+                            + "La escala se adapta automáticamente a la foto y al teléfono.");
+        }
+        if (dimensions != null && originalBitmap == null) {
+            dimensions.setText(enabled
+                    ? "Procesamiento en Gemini API · salida PNG"
+                    : "Procesado privado · sin conexión · salida PNG");
+        }
+        if (dimensions != null && originalBitmap != null && resultBitmap == null) {
+            Bitmap shown = acceptedCrop != null ? acceptedCrop : originalBitmap;
+            dimensions.setText(shown.getWidth() + " × " + shown.getHeight()
+                    + " px · " + (enabled ? "Nano Banana API" : "IA local")
+                    + " · salida PNG automática");
+        }
+        if (status != null && originalBitmap == null) {
+            status.setText(enabled && firebaseAuth.getCurrentUser() == null
+                    ? "Identifícate con Google y sube una foto"
+                    : "Sube una foto para empezar");
+        }
+        refreshActions();
+    }
+
+    private void signInWithGoogle(boolean continueAfterSignIn) {
+        if (signingIn) return;
+        pendingGenerativeAfterSignIn = continueAfterSignIn;
+        signingIn = true;
+        updateGoogleAccountUi();
+        com.google.android.libraries.identity.googleid.GetGoogleIdOption googleOption =
+                new com.google.android.libraries.identity.googleid.GetGoogleIdOption.Builder()
+                        .setFilterByAuthorizedAccounts(false)
+                        .setAutoSelectEnabled(false)
+                        .setServerClientId(getString(R.string.default_web_client_id))
+                        .build();
+        GetCredentialRequest request = new GetCredentialRequest.Builder()
+                .addCredentialOption(googleOption)
+                .build();
+        credentialManager.getCredentialAsync(
+                this,
+                request,
+                new CancellationSignal(),
+                ContextCompat.getMainExecutor(this),
+                new CredentialManagerCallback<GetCredentialResponse, GetCredentialException>() {
+                    @Override public void onResult(@NonNull GetCredentialResponse result) {
+                        handleGoogleCredential(result.getCredential());
+                    }
+
+                    @Override public void onError(@NonNull GetCredentialException error) {
+                        signingIn = false;
+                        pendingGenerativeAfterSignIn = false;
+                        updateGoogleAccountUi();
+                        if (error instanceof NoCredentialException) {
+                            toast("No hay ninguna cuenta Google disponible en el teléfono");
+                        } else if (!(error instanceof GetCredentialCancellationException)) {
+                            Log.e(TAG, "Error al seleccionar cuenta Google", error);
+                            toast("No se pudo abrir el acceso con Google");
+                        }
+                    }
+                });
+    }
+
+    private void handleGoogleCredential(Credential credential) {
+        if (!(credential instanceof CustomCredential)
+                || !GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL
+                .equals(credential.getType())) {
+            signingIn = false;
+            updateGoogleAccountUi();
+            toast("La credencial seleccionada no es una cuenta Google");
+            return;
+        }
+        try {
+            GoogleIdTokenCredential googleCredential = GoogleIdTokenCredential.createFrom(
+                    ((CustomCredential) credential).getData());
+            AuthCredential firebaseCredential = GoogleAuthProvider.getCredential(
+                    googleCredential.getIdToken(), null);
+            firebaseAuth.signInWithCredential(firebaseCredential)
+                    .addOnCompleteListener(this, task -> {
+                        signingIn = false;
+                        updateGoogleAccountUi();
+                        if (task.isSuccessful()) {
+                            toast("Sesión iniciada con Google");
+                            if (pendingGenerativeAfterSignIn) {
+                                pendingGenerativeAfterSignIn = false;
+                                enhance();
+                            }
+                        } else {
+                            pendingGenerativeAfterSignIn = false;
+                            Log.e(TAG, "Firebase Auth rechazó la cuenta", task.getException());
+                            toast("Google no pudo validar la sesión");
+                        }
+                    });
+        } catch (Exception error) {
+            signingIn = false;
+            pendingGenerativeAfterSignIn = false;
+            updateGoogleAccountUi();
+            Log.e(TAG, "Token de Google no válido", error);
+            toast("La respuesta de Google no es válida");
+        }
+    }
+
+    private void signOutGoogle() {
+        firebaseAuth.signOut();
+        pendingGenerativeAfterSignIn = false;
+        updateGoogleAccountUi();
+        credentialManager.clearCredentialStateAsync(
+                new ClearCredentialStateRequest(),
+                new CancellationSignal(),
+                ContextCompat.getMainExecutor(this),
+                new CredentialManagerCallback<Void, ClearCredentialException>() {
+                    @Override public void onResult(@NonNull Void ignored) {
+                        updateGoogleAccountUi();
+                    }
+
+                    @Override public void onError(@NonNull ClearCredentialException error) {
+                        Log.w(TAG, "No se pudo limpiar el selector de cuentas", error);
+                    }
+                });
+        toast("Sesión de Google cerrada");
+    }
+
+    private void updateGoogleAccountUi() {
+        if (accountStatus == null || googleAccountButton == null) return;
+        FirebaseUser user = firebaseAuth.getCurrentUser();
+        if (signingIn) {
+            accountStatus.setText("Abriendo el selector seguro de Google…");
+            googleAccountButton.setText("Conectando…");
+            googleAccountButton.setEnabled(false);
+        } else if (user != null) {
+            String identity = user.getEmail();
+            if (identity == null || identity.trim().isEmpty()) identity = user.getDisplayName();
+            accountStatus.setText(identity == null ? "Cuenta Google conectada" : identity);
+            googleAccountButton.setText("Cerrar sesión");
+            googleAccountButton.setEnabled(!processing);
+        } else {
+            accountStatus.setText("No has iniciado sesión");
+            googleAccountButton.setText("Continuar con Google");
+            googleAccountButton.setEnabled(!processing);
+        }
+        style(googleAccountButton, user == null);
     }
 
     private View workspace() {
@@ -294,6 +544,7 @@ public class MainActivity extends Activity {
         dismissResult();
         recycleProjectBitmaps();
         originalBitmap = bitmap;
+        resultWasGenerative = false;
         cropView.setBitmap(bitmap);
         cropView.showFullImage();
         acceptedSelection = null;
@@ -301,7 +552,8 @@ public class MainActivity extends Activity {
         viewerBadge.setText("ORIGINAL");
         uploadButton.setText("Cambiar foto");
         dimensions.setText(bitmap.getWidth() + " × " + bitmap.getHeight()
-                + " px · salida PNG automática");
+                + " px · " + (generativeMode ? "Nano Banana API" : "IA local")
+                + " · salida PNG automática");
         scroll.setScrollingEnabled(true);
         refreshActions();
     }
@@ -362,6 +614,12 @@ public class MainActivity extends Activity {
             toast("Pulsa Aceptar para aplicar el recorte");
             return;
         }
+        final boolean requestedGenerative = generativeMode;
+        if (requestedGenerative && firebaseAuth.getCurrentUser() == null) {
+            toast("Identifícate con Google para usar la IA generativa");
+            signInWithGoogle(true);
+            return;
+        }
         if (Build.VERSION.SDK_INT <= 28
                 && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE)
                 != PackageManager.PERMISSION_GRANTED) {
@@ -384,8 +642,18 @@ public class MainActivity extends Activity {
         }
         recycle(beforeBitmap);
         beforeBitmap = compareSource;
-        beginProgress("Analizando desenfoque y movimiento…", 1);
-        activeTask = executor.submit(() -> runEnhancement(operation, selection, pipelineOriginal));
+        beginProgress(
+                requestedGenerative
+                        ? "Preparando la restauración generativa…"
+                        : "Analizando desenfoque y movimiento…",
+                1);
+        activeTask = executor.submit(() -> {
+            if (requestedGenerative) {
+                runGenerativeEnhancement(operation, selection, pipelineOriginal);
+            } else {
+                runEnhancement(operation, selection, pipelineOriginal);
+            }
+        });
     }
 
     private void runEnhancement(int operation, RectF selection, Bitmap pipelineOriginal) {
@@ -425,7 +693,7 @@ public class MainActivity extends Activity {
             Uri saved = savePng(enhanced);
             Bitmap delivered = enhanced;
             enhanced = null;
-            runOnUiThread(() -> completeEnhancement(operation, delivered, saved));
+            runOnUiThread(() -> completeEnhancement(operation, delivered, saved, false));
         } catch (InterruptedException cancelled) {
             Thread.currentThread().interrupt();
             fail(operation, "Procesamiento cancelado");
@@ -450,7 +718,66 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void completeEnhancement(int operation, Bitmap result, Uri saved) {
+    private void runGenerativeEnhancement(
+            int operation, RectF selection, Bitmap pipelineOriginal) {
+        ContextCrop contextCrop = null;
+        Bitmap deblurredContext = null;
+        Bitmap preparedCrop = null;
+        Bitmap generated = null;
+        try {
+            contextCrop = createContextCrop(pipelineOriginal, selection);
+            setProgress(operation, 4, "RT-Focuser · preparando bordes y estructura…");
+            deblurredContext = RtFocuserDeblurrer.restore(
+                    this,
+                    contextCrop.bitmap,
+                    Math.min(1280, ProcessingMemory.deblurInputMaxSide(this)),
+                    value -> setProgress(operation, 4 + value * 31 / 100,
+                            "RT-Focuser · preparando la referencia…"));
+            preparedCrop = contextCrop.extract(deblurredContext);
+            if (preparedCrop != deblurredContext) {
+                recycle(deblurredContext);
+                deblurredContext = null;
+            }
+            setProgress(operation, 38, "Enviando referencias cifradas por HTTPS a Gemini…");
+            startEstimatedGenerativeProgress(operation);
+            generated = GeminiImageRestorer.restore(preparedCrop, contextCrop.bitmap);
+            if (Thread.currentThread().isInterrupted()) throw new InterruptedException("Cancelado");
+            setProgress(operation, 95, "Guardando el resultado generativo como PNG…");
+            Uri saved = savePng(generated);
+            Bitmap delivered = generated;
+            generated = null;
+            runOnUiThread(() -> completeEnhancement(operation, delivered, saved, true));
+        } catch (InterruptedException cancelled) {
+            Thread.currentThread().interrupt();
+            fail(operation, "Procesamiento generativo cancelado");
+        } catch (OutOfMemoryError error) {
+            Log.e(TAG, "Sin memoria en el modo generativo", error);
+            System.gc();
+            fail(operation, "Memoria insuficiente · se ha conservado el original");
+        } catch (Exception error) {
+            Log.e(TAG, "Error de Gemini", error);
+            fail(operation, safeApiMessage(error));
+        } finally {
+            if (contextCrop != null) {
+                Bitmap contextBitmap = contextCrop.bitmap;
+                contextCrop.recycle();
+                if (contextBitmap != pipelineOriginal) recycle(pipelineOriginal);
+            } else {
+                recycle(pipelineOriginal);
+            }
+            recycle(deblurredContext);
+            recycle(preparedCrop);
+            recycle(generated);
+        }
+    }
+
+    private String safeApiMessage(Exception error) {
+        String message = error.getMessage();
+        if (message == null || message.trim().isEmpty()) return "No se pudo completar la mejora generativa";
+        return message.length() > 180 ? message.substring(0, 180) + "…" : message;
+    }
+
+    private void completeEnhancement(int operation, Bitmap result, Uri saved, boolean generative) {
         if (!isCurrent(operation)) {
             recycle(result);
             return;
@@ -458,7 +785,10 @@ public class MainActivity extends Activity {
         recycle(resultBitmap);
         resultBitmap = result;
         savedResultUri = saved;
-        setProgressNow(100, "Mejora completada · PNG guardado en el carrete");
+        resultWasGenerative = generative;
+        setProgressNow(100, generative
+                ? "Reconstrucción generativa completada · PNG guardado"
+                : "Mejora completada · PNG guardado en el carrete");
         dimensions.setText(result.getWidth() + " × " + result.getHeight()
                 + " px · PNG sin pérdida · Imágenes/UGscaler");
         processing = false;
@@ -480,10 +810,18 @@ public class MainActivity extends Activity {
         card.setPadding(dp(16), dp(14), dp(16), dp(14));
         card.setBackground(round(panel, 20));
 
-        TextView title = text("Foto mejorada", 21, ink);
+        TextView title = text(
+                resultWasGenerative ? "Reconstrucción generativa" : "Foto mejorada",
+                21,
+                ink);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         card.addView(title);
-        TextView saved = text("Guardada automáticamente como PNG en Imágenes/UGscaler", 11, muted);
+        TextView saved = text(
+                resultWasGenerative
+                        ? "PNG guardado · puede contener detalles plausibles generados por IA"
+                        : "Guardada automáticamente como PNG en Imágenes/UGscaler",
+                11,
+                resultWasGenerative ? accent : muted);
         saved.setPadding(0, dp(3), 0, dp(10));
         card.addView(saved);
 
@@ -667,6 +1005,21 @@ public class MainActivity extends Activity {
         }, 650);
     }
 
+    private void startEstimatedGenerativeProgress(int operation) {
+        handler.postDelayed(new Runnable() {
+            @Override public void run() {
+                if (!isCurrent(operation) || !processing || progressValue >= 91) return;
+                int increment = progressValue < 65 ? 2 : 1;
+                setProgressNow(
+                        progressValue + increment,
+                        progressValue < 60
+                                ? "Nano Banana · interpretando la fotografía…"
+                                : "Nano Banana · reconstruyendo detalle y resolución…");
+                handler.postDelayed(this, 900);
+            }
+        }, 700);
+    }
+
     private void endProgress(String message) {
         processing = false;
         activeTask = null;
@@ -692,10 +1045,15 @@ public class MainActivity extends Activity {
         enhanceButton.setEnabled(hasImage && !processing && !cropView.isCropMode());
         uploadButton.setEnabled(!processing);
         newProjectButton.setEnabled(!processing || hasImage);
+        localModeButton.setEnabled(!processing);
+        generativeModeButton.setEnabled(!processing);
+        updateGoogleAccountUi();
         style(cropButton, cropView.isCropMode());
         style(enhanceButton, true);
         style(uploadButton, false);
         style(newProjectButton, false);
+        style(localModeButton, !generativeMode);
+        style(generativeModeButton, generativeMode);
     }
 
     private void newProject() {
@@ -706,13 +1064,18 @@ public class MainActivity extends Activity {
         recycleProjectBitmaps();
         acceptedSelection = null;
         savedResultUri = null;
+        resultWasGenerative = false;
         viewerBadge.setText("SIN FOTO");
         uploadButton.setText("Subir foto");
         cropButton.setText("Recortar");
         progressBar.setVisibility(View.GONE);
         percentText.setText("");
-        status.setText("Sube una foto para empezar");
-        dimensions.setText("Procesado privado · sin conexión · salida PNG");
+        status.setText(generativeMode && firebaseAuth.getCurrentUser() == null
+                ? "Identifícate con Google y sube una foto"
+                : "Sube una foto para empezar");
+        dimensions.setText(generativeMode
+                ? "Procesamiento en Gemini API · salida PNG"
+                : "Procesado privado · sin conexión · salida PNG");
         refreshActions();
     }
 
@@ -722,6 +1085,7 @@ public class MainActivity extends Activity {
         activeTask = null;
         if (task != null) task.cancel(true);
         NativeRealEsrgan.cancelActive();
+        GeminiImageRestorer.cancelActive();
         processing = false;
         progressValue = 0;
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);

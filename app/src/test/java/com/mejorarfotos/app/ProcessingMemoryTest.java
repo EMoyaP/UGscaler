@@ -26,4 +26,10 @@ public class ProcessingMemoryTest {
         assertEquals(1280, ProcessingMemory.deblurInputMaxSideFor(384));
         assertEquals(1600, ProcessingMemory.deblurInputMaxSideFor(512));
     }
+
+    @Test public void generativeAspectRatioChoosesNearestSupportedFormat() {
+        assertEquals("9:16", GeminiImageRestorer.closestAspectRatio(1080, 1920));
+        assertEquals("3:2", GeminiImageRestorer.closestAspectRatio(1500, 1000));
+        assertEquals("1:1", GeminiImageRestorer.closestAspectRatio(1000, 980));
+    }
 }

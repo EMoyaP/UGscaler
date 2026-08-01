@@ -700,13 +700,13 @@ public class MainActivity extends Activity {
                 System.gc();
                 enhanced = ImageEnhancer.enhance(this, restoredCrop, scale, 0, 0, 0, 0);
             }
+            enhanced = ImageQualityGuard.ensureMinimumDimensions(enhanced, sourceCrop);
             setProgress(operation, 92, "Protegiendo color, luces y detalle original…");
             enhanced = ImageQualityGuard.protectInPlace(
                     enhanced,
                     sourceCrop,
-                    scale,
-                    needsDeblur ? .68f : .50f,
-                    needsDeblur ? 36 : 24);
+                    needsDeblur ? .72f : .62f,
+                    needsDeblur ? 22 : 18);
             Log.i(TAG, "Protección de calidad aplicada; focusScore=" + focusScore
                     + ", deblur=" + needsDeblur);
             setProgress(operation, 95, "Guardando PNG en el carrete…");

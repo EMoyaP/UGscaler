@@ -43,7 +43,7 @@ public final class ImageQualityGuard {
     }
 
     /** Protects the candidate in place while keeping memory bounded. */
-    public static Bitmap protectInPlace(Bitmap candidate, Bitmap reference, int outputScale,
+    public static Bitmap protectInPlace(Bitmap candidate, Bitmap reference,
                                         float neuralStrength, int maxLumaDelta) {
         if (candidate == null || reference == null || candidate.isRecycled() || reference.isRecycled()) {
             throw new IllegalArgumentException("Imagen no disponible");
@@ -54,16 +54,17 @@ public final class ImageQualityGuard {
             candidate = mutable;
         }
 
-        int refWidth = Math.max(1, Math.round(candidate.getWidth() / (float) outputScale));
-        int refHeight = Math.max(1, Math.round(candidate.getHeight() / (float) outputScale));
-        Bitmap compactReference = Bitmap.createScaledBitmap(reference, refWidth, refHeight, true);
-        int[] referencePixels = new int[refWidth * refHeight];
-        compactReference.getPixels(referencePixels, 0, refWidth, 0, 0, refWidth, refHeight);
-        if (compactReference != reference) compactReference.recycle();
+        int refWidth = reference.getWidth();
+        int refHeight = reference.getHeight();
 
         int width = candidate.getWidth();
         int height = candidate.getHeight();
         int[] outputRow = new int[width];
+        int[] neuralTop = new int[width];
+        int[] neuralCenter = new int[width];
+        int[] neuralBottom = new int[width];
+        int[] referenceRow0 = new int[refWidth];
+        int[] referenceRow1 = new int[refWidth];
         int[] x0 = new int[width];
         int[] x1 = new int[width];
         float[] xf = new float[width];
@@ -74,23 +75,70 @@ public final class ImageQualityGuard {
             xf[x] = sx - x0[x];
         }
 
+        candidate.getPixels(neuralCenter, 0, width, 0, 0, width, 1);
+        System.arraycopy(neuralCenter, 0, neuralTop, 0, width);
+        if (height > 1) {
+            candidate.getPixels(neuralBottom, 0, width, 0, 1, width, 1);
+        } else {
+            System.arraycopy(neuralCenter, 0, neuralBottom, 0, width);
+        }
+
         for (int y = 0; y < height; y++) {
-            candidate.getPixels(outputRow, 0, width, 0, y, width, 1);
             float sy = height <= 1 ? 0f : y * (refHeight - 1f) / (height - 1f);
             int y0 = Math.max(0, Math.min(refHeight - 1, (int) sy));
             int y1 = Math.min(refHeight - 1, y0 + 1);
             float yf = sy - y0;
-            int row0 = y0 * refWidth;
-            int row1 = y1 * refWidth;
+            reference.getPixels(referenceRow0, 0, refWidth, 0, y0, refWidth, 1);
+            if (y1 == y0) {
+                System.arraycopy(referenceRow0, 0, referenceRow1, 0, refWidth);
+            } else {
+                reference.getPixels(referenceRow1, 0, refWidth, 0, y1, refWidth, 1);
+            }
             for (int x = 0; x < width; x++) {
-                int top = interpolate(referencePixels[row0 + x0[x]], referencePixels[row0 + x1[x]], xf[x]);
-                int bottom = interpolate(referencePixels[row1 + x0[x]], referencePixels[row1 + x1[x]], xf[x]);
+                int top = interpolate(referenceRow0[x0[x]], referenceRow0[x1[x]], xf[x]);
+                int bottom = interpolate(referenceRow1[x0[x]], referenceRow1[x1[x]], xf[x]);
                 int baseline = interpolate(top, bottom, yf);
-                outputRow[x] = protectPixel(baseline, outputRow[x], neuralStrength, maxLumaDelta);
+                outputRow[x] = applyNeuralDetail(
+                        baseline,
+                        neuralCenter[x],
+                        neuralCenter[Math.max(0, x - 1)],
+                        neuralCenter[Math.min(width - 1, x + 1)],
+                        neuralTop[x],
+                        neuralBottom[x],
+                        neuralStrength,
+                        maxLumaDelta);
             }
             candidate.setPixels(outputRow, 0, width, 0, y, width, 1);
+            if (y + 1 < height) {
+                int[] oldTop = neuralTop;
+                neuralTop = neuralCenter;
+                neuralCenter = neuralBottom;
+                neuralBottom = oldTop;
+                int next = Math.min(height - 1, y + 2);
+                if (next == y + 1) {
+                    System.arraycopy(neuralCenter, 0, neuralBottom, 0, width);
+                } else {
+                    candidate.getPixels(neuralBottom, 0, width, 0, next, width, 1);
+                }
+            }
         }
         return candidate;
+    }
+
+    /** Never return fewer pixels than the source selected by the user. */
+    public static Bitmap ensureMinimumDimensions(Bitmap candidate, Bitmap reference) {
+        if (candidate.getWidth() >= reference.getWidth()
+                && candidate.getHeight() >= reference.getHeight()) return candidate;
+        float factor = Math.max(
+                reference.getWidth() / (float) candidate.getWidth(),
+                reference.getHeight() / (float) candidate.getHeight());
+        Bitmap expanded = Bitmap.createScaledBitmap(
+                candidate,
+                Math.max(reference.getWidth(), Math.round(candidate.getWidth() * factor)),
+                Math.max(reference.getHeight(), Math.round(candidate.getHeight() * factor)),
+                true);
+        if (expanded != candidate) candidate.recycle();
+        return expanded;
     }
 
     static float focusScoreForLuma(int[] luma, int width, int height) {
@@ -110,26 +158,25 @@ public final class ImageQualityGuard {
         return samples == 0 ? 0f : absoluteLaplacian / (float) samples;
     }
 
-    static int protectPixel(int baseline, int neural, float strength, int maxLumaDelta) {
+    static int applyNeuralDetail(int baseline, int center, int left, int right,
+                                 int top, int bottom, float strength, int maxLumaDelta) {
         int br = (baseline >>> 16) & 0xff;
         int bg = (baseline >>> 8) & 0xff;
         int bb = baseline & 0xff;
-        int nr = (neural >>> 16) & 0xff;
-        int ng = (neural >>> 8) & 0xff;
-        int nb = neural & 0xff;
-        int baseY = luminance(br, bg, bb);
-        int neuralY = luminance(nr, ng, nb);
-        int lumaDelta = clamp(neuralY - baseY, -maxLumaDelta, maxLumaDelta);
-        int appliedLuma = Math.round(lumaDelta * clamp01(strength));
-        float chromaStrength = Math.min(.14f, clamp01(strength) * .20f);
-        int redChroma = clamp((nr - neuralY) - (br - baseY), -12, 12);
-        int greenChroma = clamp((ng - neuralY) - (bg - baseY), -12, 12);
-        int blueChroma = clamp((nb - neuralY) - (bb - baseY), -12, 12);
-        int r = protectedChannel(br, appliedLuma + Math.round(redChroma * chromaStrength));
-        int g = protectedChannel(bg, appliedLuma + Math.round(greenChroma * chromaStrength));
-        int b = protectedChannel(bb, appliedLuma + Math.round(blueChroma * chromaStrength));
+        int centerY = pixelLuminance(center);
+        int averageY = (pixelLuminance(left) + pixelLuminance(right)
+                + pixelLuminance(top) + pixelLuminance(bottom)) / 4;
+        int neuralDetail = clamp(centerY - averageY, -maxLumaDelta, maxLumaDelta);
+        int appliedLuma = Math.round(neuralDetail * clamp01(strength));
+        int r = protectedChannel(br, appliedLuma);
+        int g = protectedChannel(bg, appliedLuma);
+        int b = protectedChannel(bb, appliedLuma);
         int alpha = (baseline >>> 24) & 0xff;
         return (alpha << 24) | (r << 16) | (g << 8) | b;
+    }
+
+    private static int pixelLuminance(int color) {
+        return luminance((color >>> 16) & 0xff, (color >>> 8) & 0xff, color & 0xff);
     }
 
     private static int protectedChannel(int baseline, int delta) {

@@ -43,15 +43,18 @@ public final class ProcessingMemory {
     }
 
     public static int realEsrganInputMaxSide(Context context, int outputScale) {
-        int heap = heapClassMb(context);
+        return realEsrganInputMaxSideFor(heapClassMb(context), outputScale);
+    }
+
+    static int realEsrganInputMaxSideFor(int heap, int outputScale) {
         if (outputScale >= 4) {
-            if (heap < 320) return 640;
-            if (heap < 512) return 768;
-            return 896;
+            if (heap < 320) return 768;
+            if (heap < 512) return 896;
+            return 1024;
         }
-        if (heap < 320) return 960;
-        if (heap < 512) return 1152;
-        return 1280;
+        if (heap < 320) return 1024;
+        if (heap < 512) return 1280;
+        return 1536;
     }
 
     public static int fallbackInputMaxSide(Context context, int outputScale) {

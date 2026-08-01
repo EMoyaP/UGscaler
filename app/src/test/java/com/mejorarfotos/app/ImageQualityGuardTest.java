@@ -22,17 +22,21 @@ public class ImageQualityGuardTest {
     public void neuralColourCastIsStronglyLimited() {
         int baseline = argb(255, 160, 150, 140);
         int neural = argb(255, 245, 105, 65);
-        int protectedPixel = ImageQualityGuard.protectPixel(baseline, neural, .5f, 24);
+        int protectedPixel = ImageQualityGuard.applyNeuralDetail(
+                baseline, neural, neural, neural, neural, neural, .62f, 18);
         int originalRedBias = red(baseline) - blue(baseline);
         int protectedRedBias = red(protectedPixel) - blue(protectedPixel);
-        assertTrue(protectedRedBias <= originalRedBias + 4);
+        assertEquals(originalRedBias, protectedRedBias);
     }
 
     @Test
     public void protectionDoesNotCreateNewClipping() {
         int baseline = argb(255, 245, 244, 243);
         int neural = argb(255, 255, 255, 255);
-        int protectedPixel = ImageQualityGuard.protectPixel(baseline, neural, .7f, 36);
+        int darkNeighbour = argb(255, 80, 80, 80);
+        int protectedPixel = ImageQualityGuard.applyNeuralDetail(
+                baseline, neural, darkNeighbour, darkNeighbour,
+                darkNeighbour, darkNeighbour, .72f, 22);
         assertTrue(red(protectedPixel) <= 254);
         assertTrue(green(protectedPixel) <= 254);
         assertTrue(blue(protectedPixel) <= 254);
@@ -41,7 +45,8 @@ public class ImageQualityGuardTest {
     @Test
     public void identicalPixelsRemainIdentical() {
         int pixel = argb(255, 43, 127, 211);
-        assertEquals(pixel, ImageQualityGuard.protectPixel(pixel, pixel, .5f, 24));
+        assertEquals(pixel, ImageQualityGuard.applyNeuralDetail(
+                pixel, pixel, pixel, pixel, pixel, pixel, .62f, 18));
     }
 
     private static int argb(int a, int r, int g, int b) {

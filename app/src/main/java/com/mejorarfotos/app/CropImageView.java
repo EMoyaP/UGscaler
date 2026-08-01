@@ -14,6 +14,7 @@ public class CropImageView extends View {
     private Bitmap bitmap;
     private Bitmap comparisonBitmap;
     private boolean comparing;
+    private boolean cropMode;
     private float divider = .5f;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final Paint overlay = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -41,6 +42,7 @@ public class CropImageView extends View {
         bitmap = value;
         comparisonBitmap = null;
         comparing = false;
+        cropMode = false;
         selection.set(.07f, .07f, .93f, .93f);
         requestLayout();
         invalidate();
@@ -52,6 +54,7 @@ public class CropImageView extends View {
         bitmap = after;
         comparisonBitmap = before;
         comparing = before != null && after != null;
+        cropMode = false;
         selection.set(0, 0, 1, 1);
         invalidate();
     }
@@ -62,7 +65,19 @@ public class CropImageView extends View {
     public void beginCrop() {
         comparisonBitmap = null;
         comparing = false;
+        cropMode = true;
         selection.set(.08f, .08f, .92f, .92f);
+        invalidate();
+    }
+
+    public RectF getSelectionNormalized() {
+        return new RectF(selection);
+    }
+
+    public boolean isCropMode() { return cropMode; }
+
+    public void finishCrop() {
+        cropMode = false;
         invalidate();
     }
 
@@ -132,11 +147,24 @@ public class CropImageView extends View {
     }
 
     @Override public boolean onTouchEvent(MotionEvent event) {
-        if (bitmap == null || event.getAction() == MotionEvent.ACTION_CANCEL) return true;
+        if (bitmap == null) return true;
+        boolean ownsGesture = cropMode || isComparing();
+        if (event.getAction() == MotionEvent.ACTION_DOWN && ownsGesture) {
+            getParent().requestDisallowInterceptTouchEvent(true);
+        }
+        if (event.getAction() == MotionEvent.ACTION_CANCEL) {
+            getParent().requestDisallowInterceptTouchEvent(false);
+            action = 0;
+            return true;
+        }
         if (isComparing()) {
             if (event.getAction() == MotionEvent.ACTION_MOVE || event.getAction() == MotionEvent.ACTION_DOWN) {
                 float left = offsetX, width = bitmap.getWidth() * scale;
                 divider = Math.max(0.05f, Math.min(.95f, (event.getX() - left) / width)); invalidate();
+            }
+            if (event.getAction() == MotionEvent.ACTION_UP) {
+                getParent().requestDisallowInterceptTouchEvent(false);
+                performClick();
             }
             return true;
         }
@@ -168,6 +196,7 @@ public class CropImageView extends View {
             downX = event.getX(); downY = event.getY(); invalidate();
         }
         if (event.getAction() == MotionEvent.ACTION_UP) {
+            getParent().requestDisallowInterceptTouchEvent(false);
             performClick();
             action = 0;
         }
@@ -198,5 +227,9 @@ public class CropImageView extends View {
         return cropped;
     }
 
-    public void showFullImage() { selection.set(0, 0, 1, 1); invalidate(); }
+    public void showFullImage() {
+        cropMode = false;
+        selection.set(0, 0, 1, 1);
+        invalidate();
+    }
 }

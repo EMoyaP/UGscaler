@@ -1,8 +1,9 @@
 package com.mejorarfotos.app;
 
 import android.Manifest;
+import android.annotation.SuppressLint;
 import android.app.Activity;
-import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.ClipData;
 import android.content.ContentValues;
 import android.content.Intent;
@@ -10,27 +11,30 @@ import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.graphics.RectF;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.MediaStore;
 import android.util.Log;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.Window;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.FrameLayout;
-import android.widget.HorizontalScrollView;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
-import android.widget.SeekBar;
-import android.widget.Switch;
+import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import androidx.core.content.FileProvider;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
@@ -47,31 +51,50 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/** UGscaler editor: photo restoration and frame recovery from video. */
+/** Mobile-first UGscaler photo workflow: upload, crop, automatic local AI and export. */
+@SuppressLint("SetTextI18n")
 public class MainActivity extends Activity {
     private static final String TAG = "UGscaler";
-    private static final int PICK_IMAGE = 10, PICK_VIDEO = 11, TAKE_PHOTO = 12;
-    private static final int CAMERA_PERMISSION = 13, STORAGE_PERMISSION = 14;
-    private final int background = Color.rgb(13, 16, 15), panel = Color.rgb(25, 31, 28);
-    private final int panel2 = Color.rgb(32, 40, 35), ink = Color.rgb(239, 244, 239);
-    private final int muted = Color.rgb(157, 173, 161), accent = Color.rgb(214, 243, 106);
-    private CropImageView cropView;
-    private TextView status, resolution, compareLabel, videoInfo;
-    private View videoControlsView;
-    private Button enhanceButton, saveButton, compareButton, photoMode, videoMode, cropButton;
-    private SeekBar noiseSeek, detailSeek, sharpSeek, frameSeek;
-    private Switch faceRestoreSwitch;
-    private Bitmap currentBitmap, enhancedBitmap, originalCrop;
-    private Uri cameraUri, currentVideoUri;
-    private int scaleFactor = 2, profile = 0;
-    private long videoDurationUs;
-    private VideoFrameProcessor.Info currentVideoInfo;
-    private boolean videoModeEnabled, loadingFrame, editingOriginal = true;
+    private static final int PICK_IMAGE = 10;
+    private static final int STORAGE_PERMISSION = 11;
+
+    private final int background = Color.rgb(10, 14, 13);
+    private final int panel = Color.rgb(24, 31, 28);
+    private final int panel2 = Color.rgb(31, 40, 35);
+    private final int ink = Color.rgb(241, 246, 241);
+    private final int muted = Color.rgb(161, 176, 165);
+    private final int accent = Color.rgb(214, 243, 106);
+    private final int cyan = Color.rgb(42, 207, 231);
+
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
-    private final AtomicInteger operationGeneration = new AtomicInteger();
-    private volatile Future<?> activeTask;
-    private volatile boolean processing;
+    private final AtomicInteger generation = new AtomicInteger();
+    private final Handler handler = new Handler(Looper.getMainLooper());
+
+    private CropImageView cropView;
+    private LockableScrollView scroll;
+    private Button uploadButton;
+    private Button cropButton;
+    private Button enhanceButton;
+    private Button newProjectButton;
+    private TextView status;
+    private TextView dimensions;
+    private TextView percentText;
+    private TextView viewerBadge;
+    private ProgressBar progressBar;
+    private LinearLayout actionRow;
+
+    private Bitmap originalBitmap;
+    private Bitmap acceptedCrop;
+    private Bitmap beforeBitmap;
+    private Bitmap resultBitmap;
+    private RectF acceptedSelection;
+    private Uri savedResultUri;
+    private Dialog resultDialog;
+    private Future<?> activeTask;
+    private boolean processing;
+    private boolean pendingEnhance;
     private volatile boolean destroyed;
+    private int progressValue;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -84,922 +107,875 @@ public class MainActivity extends Activity {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(background);
-        root.setPadding(dp(12), dp(7), dp(12), dp(8));
-        root.addView(appBar(), fixed(50));
+        root.setPadding(dp(14), dp(8), dp(14), dp(10));
 
-        ScrollView scroll = new ScrollView(this);
+        root.addView(appBar(), fixed(54));
+        scroll = new LockableScrollView(this);
         scroll.setFillViewport(true);
         scroll.setClipToPadding(false);
         scroll.setVerticalScrollBarEnabled(false);
-        LinearLayout editor = new LinearLayout(this);
-        editor.setOrientation(LinearLayout.VERTICAL);
-        editor.addView(modeBar(), spacedFixed(52, 8));
-        editor.addView(workspace(), spacedFixed(viewportHeightDp(), 8));
-        editor.addView(cropControls(), spacedWrap(8));
-        editor.addView(sourceBar(), spacedFixed(52, 8));
-        videoControlsView = videoControls();
-        editor.addView(videoControlsView, spacedWrap(8));
-        status = text("Listo para mejorar · elige una foto o un video", 12, muted);
-        status.setPadding(dp(12), dp(10), dp(12), dp(10));
-        status.setMinHeight(dp(44));
-        status.setBackground(round(panel2, 12));
-        status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
-        editor.addView(status, spacedWrap(10));
-        editor.addView(
-                section(
-                        "MEJORA INTELIGENTE",
-                        "Procesado local y privado · el original nunca se sobrescribe"),
-                spacedWrap(6));
-        editor.addView(presets(), spacedFixed(52, 8));
-        editor.addView(scaleControls(), spacedWrap(8));
-        editor.addView(faceControls(), spacedWrap(8));
-        noiseSeek = addSlider(editor, "Reducir ruido", "Limpia grano y compresion", 18);
-        detailSeek = addSlider(editor, "Recuperar detalle", "Textura natural sin halos", 64);
-        sharpSeek = addSlider(editor, "Enfoque", "Define bordes y microcontraste", 58);
-        editor.addView(
-                section("REVISIÓN", "Desliza la línea del visor para comparar"),
-                spacedWrap(4));
-        resolution = text("Salida estimada · todavia no procesada", 12, muted);
-        resolution.setPadding(dp(2), dp(8), dp(2), dp(12));
-        editor.addView(resolution, spacedWrap(4));
-        scroll.addView(editor, new ScrollView.LayoutParams(-1, -2));
-        LinearLayout.LayoutParams scrollParams = new LinearLayout.LayoutParams(-1, 0, 1f);
-        scrollParams.topMargin = dp(4);
-        scrollParams.bottomMargin = dp(6);
-        root.addView(scroll, scrollParams);
-        root.addView(actions(), fixed(58));
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(0, dp(6), 0, dp(12));
+        content.addView(intro(), spacedWrap(12));
+        content.addView(workspace(), spacedFixed(workspaceHeightDp(), 10));
+        content.addView(fileAction(), spacedFixed(50, 10));
+
+        actionRow = new LinearLayout(this);
+        actionRow.setGravity(Gravity.CENTER_VERTICAL);
+        cropButton = button("Recortar", false);
+        enhanceButton = button("Mejorar con IA", true);
+        actionRow.addView(cropButton, weight(1f, 0, 7));
+        actionRow.addView(enhanceButton, weight(1.25f, 0, 0));
+        cropButton.setOnClickListener(v -> toggleCrop());
+        enhanceButton.setOnClickListener(v -> enhance());
+        content.addView(actionRow, spacedFixed(54, 10));
+
+        LinearLayout progressCard = new LinearLayout(this);
+        progressCard.setOrientation(LinearLayout.VERTICAL);
+        progressCard.setPadding(dp(13), dp(11), dp(13), dp(11));
+        progressCard.setBackground(round(panel2, 14));
+        LinearLayout statusRow = new LinearLayout(this);
+        statusRow.setGravity(Gravity.CENTER_VERTICAL);
+        status = text("Sube una foto para empezar", 13, ink);
+        percentText = text("", 13, accent);
+        percentText.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        statusRow.addView(status, new LinearLayout.LayoutParams(0, -2, 1f));
+        statusRow.addView(percentText, new LinearLayout.LayoutParams(-2, -2));
+        progressCard.addView(statusRow);
+        progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        progressBar.setMax(100);
+        progressBar.setProgressTintList(android.content.res.ColorStateList.valueOf(accent));
+        progressBar.setProgressBackgroundTintList(
+                android.content.res.ColorStateList.valueOf(Color.rgb(53, 65, 57)));
+        progressBar.setVisibility(View.GONE);
+        LinearLayout.LayoutParams progressParams = new LinearLayout.LayoutParams(-1, dp(7));
+        progressParams.topMargin = dp(10);
+        progressCard.addView(progressBar, progressParams);
+        dimensions = text("Procesado privado · sin conexión · salida PNG", 11, muted);
+        dimensions.setPadding(0, dp(7), 0, 0);
+        progressCard.addView(dimensions);
+        content.addView(progressCard, spacedWrap(8));
+
+        TextView privacy = text(
+                "RT-Focuser elimina desenfoque y Real-ESRGAN recupera resolución. "
+                        + "La escala se adapta automáticamente a la foto y al teléfono.",
+                11,
+                muted);
+        privacy.setGravity(Gravity.CENTER);
+        privacy.setPadding(dp(10), dp(7), dp(10), dp(5));
+        content.addView(privacy, spacedWrap(0));
+
+        scroll.addView(content, new ScrollViewLayoutParams(-1, -2));
+        root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
         setContentView(root);
+
         ViewCompat.setOnApplyWindowInsetsListener(root, (view, insets) -> {
             Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
-            view.setPadding(dp(12), bars.top + dp(7), dp(12), bars.bottom + dp(8));
+            view.setPadding(dp(14), bars.top + dp(8), dp(14), bars.bottom + dp(10));
             return insets;
         });
         ViewCompat.requestApplyInsets(root);
-        refreshModeUi();
+        refreshActions();
     }
 
     private View appBar() {
-        LinearLayout bar = new LinearLayout(this); bar.setGravity(Gravity.CENTER_VERTICAL);
-        TextView brand = text("UGscaler", 19, ink); brand.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        bar.addView(brand, new LinearLayout.LayoutParams(0, -1, 1));
-        Button fresh = button("Nuevo", false); fresh.setOnClickListener(v -> clearEditor());
-        bar.addView(fresh, fixedWidth(78));
-        TextView tag = text("IA LOCAL", 10, accent); tag.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        tag.setGravity(Gravity.CENTER); tag.setPadding(dp(8), 0, dp(8), 0); tag.setBackground(round(Color.rgb(38, 48, 35), 20));
-        LinearLayout.LayoutParams tagParams = fixedWidth(78); tagParams.leftMargin = dp(7); bar.addView(tag, tagParams);
+        LinearLayout bar = new LinearLayout(this);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout titleBox = new LinearLayout(this);
+        titleBox.setOrientation(LinearLayout.VERTICAL);
+        TextView brand = text("UGscaler", 21, ink);
+        brand.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        TextView label = text("RESTAURACIÓN FOTOGRÁFICA · IA LOCAL", 9, cyan);
+        label.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        titleBox.addView(brand);
+        titleBox.addView(label);
+        bar.addView(titleBox, new LinearLayout.LayoutParams(0, -1, 1f));
+        newProjectButton = button("Nuevo proyecto", false);
+        newProjectButton.setOnClickListener(v -> newProject());
+        bar.addView(newProjectButton, fixedWidth(122));
         return bar;
     }
 
-    private View modeBar() {
-        LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL);
-        photoMode = button("Foto", true); videoMode = button("Video", false);
-        row.addView(photoMode, weight(1, 0, 5)); row.addView(videoMode, weight(1, 0, 0));
-        photoMode.setOnClickListener(v -> setVideoMode(false));
-        videoMode.setOnClickListener(v -> setVideoMode(true));
-        return row;
+    private View intro() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        TextView title = text("Mejora una foto en dos pasos", 20, ink);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        TextView subtitle = text(
+                "Recorta si lo necesitas y deja que UGscaler seleccione la mejor escala.",
+                12,
+                muted);
+        subtitle.setPadding(0, dp(4), 0, 0);
+        box.addView(title);
+        box.addView(subtitle);
+        return box;
     }
 
     private View workspace() {
-        FrameLayout frame = new FrameLayout(this); frame.setBackground(round(Color.rgb(19, 24, 21), 16)); frame.setElevation(dp(2));
+        FrameLayout frame = new FrameLayout(this);
+        frame.setBackground(round(Color.rgb(17, 23, 20), 18));
         frame.setClipToOutline(true);
-        cropView = new CropImageView(this); cropView.setContentDescription("Visor de imagen, fotograma y recorte");
+        frame.setElevation(dp(2));
+        cropView = new CropImageView(this);
+        cropView.setContentDescription("Previsualización y recorte de la fotografía");
         frame.addView(cropView, new FrameLayout.LayoutParams(-1, -1));
-        compareLabel = text("VISTA ORIGINAL", 10, ink); compareLabel.setGravity(Gravity.CENTER);
-        compareLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD); compareLabel.setBackground(round(Color.argb(180, 18, 23, 20), 9));
-        FrameLayout.LayoutParams badgeParams = new FrameLayout.LayoutParams(dp(125), dp(27), Gravity.TOP | Gravity.START);
-        badgeParams.setMargins(dp(10), dp(10), 0, 0); frame.addView(compareLabel, badgeParams);
-        compareButton = button("Comparar antes / despues", false); compareButton.setVisibility(View.GONE);
-        FrameLayout.LayoutParams compareParams = new FrameLayout.LayoutParams(dp(205), dp(39), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-        compareParams.bottomMargin = dp(12); frame.addView(compareButton, compareParams);
-        compareButton.setOnClickListener(v -> {
-            cropView.toggleComparison();
-            compareLabel.setText(cropView.isComparing() ? "COMPARACION · arrastra" : "VISTA RESULTADO");
-        });
+        viewerBadge = text("SIN FOTO", 10, ink);
+        viewerBadge.setGravity(Gravity.CENTER);
+        viewerBadge.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        viewerBadge.setBackground(round(Color.argb(205, 18, 25, 21), 10));
+        FrameLayout.LayoutParams badge = new FrameLayout.LayoutParams(
+                dp(116), dp(30), Gravity.TOP | Gravity.START);
+        badge.setMargins(dp(11), dp(11), 0, 0);
+        frame.addView(viewerBadge, badge);
         return frame;
     }
 
-    private View cropControls() {
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(10), dp(8), dp(10), dp(8));
-        card.setBackground(round(panel2, 13));
-
-        TextView title = text("RECORTE DE LA IMAGEN ORIGINAL", 11, accent);
-        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        card.addView(title, fixed(19));
-        TextView help = text("Arrastra el interior para moverlo y las esquinas para ajustar", 11, muted);
-        card.addView(help, fixed(21));
-
-        LinearLayout actions = new LinearLayout(this);
-        actions.setGravity(Gravity.CENTER_VERTICAL);
-        cropButton = button("Activar recorte", true);
-        Button fullButton = button("Usar imagen completa", false);
-        actions.addView(cropButton, weight(1, 0, 6));
-        actions.addView(fullButton, weight(1, 0, 0));
-        card.addView(actions, new LinearLayout.LayoutParams(-1, dp(46)));
-
-        cropButton.setOnClickListener(v -> startCrop());
-        fullButton.setOnClickListener(v -> useFullOriginal());
-        return card;
-    }
-
-    private View sourceBar() {
-        LinearLayout bar = new LinearLayout(this); bar.setGravity(Gravity.CENTER_VERTICAL);
-        Button openPhoto = button("Abrir foto", false), openVideo = button("Abrir video", false), camera = button("Camara", false);
-        bar.addView(openPhoto, weight(1, 0, 5)); bar.addView(openVideo, weight(1, 0, 5)); bar.addView(camera, weight(1, 0, 0));
-        openPhoto.setOnClickListener(v -> { setVideoMode(false); chooseImage(); });
-        openVideo.setOnClickListener(v -> { setVideoMode(true); chooseVideo(); });
-        camera.setOnClickListener(v -> takePhoto());
-        return bar;
-    }
-
-    private View videoControls() {
-        LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(dp(4), 0, dp(4), 0);
-        LinearLayout labels = new LinearLayout(this); labels.setGravity(Gravity.CENTER_VERTICAL);
-        videoInfo = text("Video · buscando el mejor fotograma", 11, muted); labels.addView(videoInfo, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView hint = text("índice exacto", 10, accent); hint.setGravity(Gravity.END); labels.addView(hint, fixedWidth(105));
-        box.addView(labels, fixed(22));
-        frameSeek = new SeekBar(this); frameSeek.setMax(1000); frameSeek.setProgress(500); frameSeek.setContentDescription("Seleccionar fotograma del video");
-        box.addView(frameSeek, fixed(28));
-        frameSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            public void onProgressChanged(SeekBar bar, int value, boolean fromUser) { if (fromUser && videoDurationUs > 0) videoInfo.setText("Fotograma aprox. " + Math.round(value / 1000f * 100) + "%"); }
-            public void onStartTrackingTouch(SeekBar bar) {}
-            public void onStopTrackingTouch(SeekBar bar) { if (videoModeEnabled && currentVideoUri != null) loadVideoFrame(bar.getProgress()); }
-        });
-        return box;
-    }
-
-    private View presets() {
-        HorizontalScrollView scroll = new HorizontalScrollView(this); scroll.setHorizontalScrollBarEnabled(false);
-        LinearLayout row = new LinearLayout(this); row.setOrientation(LinearLayout.HORIZONTAL);
-        String[] names = {"Auto", "Retrato", "Paisaje", "Texto"};
-        for (int i = 0; i < names.length; i++) {
-            final int value = i; Button preset = button(names[i], i == 0);
-            LinearLayout.LayoutParams p = fixedWidth(92); if (i > 0) p.leftMargin = dp(7); row.addView(preset, p);
-            preset.setOnClickListener(v -> { profile = value; selectPreset(row, value); applyProfile(value); });
-        }
-        scroll.addView(row, new HorizontalScrollView.LayoutParams(-2, -1)); return scroll;
-    }
-
-    private void selectPreset(LinearLayout row, int selected) { for (int i = 0; i < row.getChildCount(); i++) style((Button) row.getChildAt(i), i == selected); }
-
-    private void applyProfile(int value) {
-        if (value == 1) { noiseSeek.setProgress(38); detailSeek.setProgress(49); sharpSeek.setProgress(42); }
-        else if (value == 2) { noiseSeek.setProgress(14); detailSeek.setProgress(76); sharpSeek.setProgress(68); }
-        else if (value == 3) { noiseSeek.setProgress(28); detailSeek.setProgress(86); sharpSeek.setProgress(78); }
-        else { noiseSeek.setProgress(18); detailSeek.setProgress(64); sharpSeek.setProgress(58); }
-        status.setText("Preset aplicado · pulsa Mejorar con IA para generar una nueva version");
-    }
-
-    private View scaleControls() {
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(10), dp(8), dp(10), dp(8));
-        card.setBackground(round(panel2, 13));
-
-        TextView title = text("ESCALA DE SALIDA", 11, accent);
-        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        card.addView(title, fixed(19));
-        TextView note = text("2× recomendado · 4× aumenta resolución y consumo de memoria", 11, muted);
-        card.addView(note, fixed(21));
-
-        LinearLayout row = new LinearLayout(this);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        Button x2 = button("2x", true), x4 = button("4x", false);
-        Button reset = button("Restablecer", false);
-        row.addView(x2, weight(1, 0, 6));
-        row.addView(x4, weight(1, 0, 6));
-        row.addView(reset, weight(1.35f, 0, 0));
-        card.addView(row, new LinearLayout.LayoutParams(-1, dp(46)));
-        x2.setOnClickListener(v -> { scaleFactor = 2; style(x2, true); style(x4, false); });
-        x4.setOnClickListener(v -> { scaleFactor = 4; style(x4, true); style(x2, false); });
-        reset.setOnClickListener(v -> { profile = 0; scaleFactor = 2; style(x2, true); style(x4, false); applyProfile(0); status.setText("Ajustes restablecidos · elige un preset o personaliza la mejora"); });
-        return card;
-    }
-
-    private View faceControls() {
-        LinearLayout row = new LinearLayout(this);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(10), dp(4), dp(10), dp(4));
-        row.setBackground(round(panel2, 13));
-        LinearLayout copy = new LinearLayout(this);
-        copy.setOrientation(LinearLayout.VERTICAL);
-        TextView title = text("Rostro IA · CodeFormer", 13, ink);
-        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        copy.addView(title, fixed(25));
-        copy.addView(text("Fidelidad 90% · puede reconstruir rasgos", 10, muted), fixed(23));
-        row.addView(copy, new LinearLayout.LayoutParams(0, -1, 1f));
-        faceRestoreSwitch = new Switch(this);
-        // CodeFormer is opt-in because its 359 MiB model can exceed Android's
-        // process memory limit when combined with a large enhanced bitmap.
-        faceRestoreSwitch.setChecked(false);
-        faceRestoreSwitch.setContentDescription("Activar restauración facial generativa");
-        faceRestoreSwitch.setOnCheckedChangeListener((button, checked) -> {
-            if (checked) {
-                toast("CodeFormer solo se ejecutará si hay memoria suficiente");
-            }
-        });
-        row.addView(faceRestoreSwitch, fixedWidth(55));
-        return row;
-    }
-
-    private SeekBar addSlider(LinearLayout parent, String title, String hint, int value) {
-        LinearLayout row = new LinearLayout(this);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setOrientation(LinearLayout.VERTICAL);
-        row.setPadding(dp(10), dp(7), dp(10), dp(5));
-        row.setBackground(round(panel, 12));
-        LinearLayout labels = new LinearLayout(this); labels.setGravity(Gravity.CENTER_VERTICAL);
-        TextView left = text(title, 13, ink); left.setTypeface(Typeface.DEFAULT, Typeface.BOLD); labels.addView(left, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView right = text(String.valueOf(value), 12, accent); right.setGravity(Gravity.END); labels.addView(right, fixedWidth(35)); row.addView(labels, fixed(22));
-        TextView hintView = text(hint, 10, muted);
-        row.addView(hintView, fixed(18));
-        SeekBar seek = new SeekBar(this); seek.setContentDescription(title); seek.setMax(100); seek.setProgress(value); row.addView(seek, fixed(32));
-        seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            public void onProgressChanged(SeekBar b, int n, boolean fromUser) { right.setText(String.valueOf(n)); }
-            public void onStartTrackingTouch(SeekBar b) {} public void onStopTrackingTouch(SeekBar b) {}
-        });
-        parent.addView(row, spacedWrap(7)); return seek;
-    }
-
-    private View section(String title, String sub) {
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setGravity(Gravity.CENTER_VERTICAL);
-        box.setPadding(dp(2), dp(7), dp(2), dp(7));
-        TextView a = text(title, 10, accent);
-        a.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        box.addView(a, fixed(20));
-        box.addView(text(sub, 11, muted), new LinearLayout.LayoutParams(-1, -2));
-        return box;
-    }
-
-    private View actions() {
-        LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER_VERTICAL);
-        enhanceButton = button("Mejorar con IA", true);
-        saveButton = button("Guardar PNG", false);
-        saveButton.setEnabled(false);
-        row.addView(enhanceButton, weight(1.25f, 0, 7));
-        row.addView(saveButton, weight(1, 0, 0));
-        enhanceButton.setOnClickListener(v -> enhance()); saveButton.setOnClickListener(v -> saveImage()); return row;
+    private View fileAction() {
+        uploadButton = button("Subir foto", false);
+        uploadButton.setOnClickListener(v -> chooseImage());
+        return uploadButton;
     }
 
     private void chooseImage() {
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT); intent.setType("image/*"); intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION); startActivityForResult(intent, PICK_IMAGE);
-    }
-
-    private void chooseVideo() {
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT); intent.setType("video/*"); intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION); startActivityForResult(intent, PICK_VIDEO);
-    }
-
-    private void takePhoto() {
-        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.CAMERA}, CAMERA_PERMISSION); return;
+        if (processing) {
+            toast("Espera a que termine el procesamiento");
+            return;
         }
-        try {
-            File dir = new File(getCacheDir(), "images"); if (!dir.exists()) dir.mkdirs();
-            File file = new File(dir, "captura_" + System.currentTimeMillis() + ".jpg");
-            cameraUri = FileProvider.getUriForFile(this, "com.mejorarfotos.app.fileprovider", file);
-            Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE); intent.putExtra(MediaStore.EXTRA_OUTPUT, cameraUri);
-            intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION); startActivityForResult(intent, TAKE_PHOTO);
-        } catch (Exception e) { toast("No se pudo abrir la camara"); }
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.setType("image/*");
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        startActivityForResult(intent, PICK_IMAGE);
     }
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data); if (resultCode != RESULT_OK) return;
-        Uri uri = requestCode == TAKE_PHOTO ? cameraUri : data == null ? null : data.getData(); if (uri == null) return;
-        if (requestCode == PICK_VIDEO) { setVideoMode(true); loadVideo(uri); } else { setVideoMode(false); loadBitmap(uri); }
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != PICK_IMAGE || resultCode != RESULT_OK || data == null) return;
+        Uri uri = data.getData();
+        if (uri != null) loadBitmap(uri);
     }
 
     private void loadBitmap(Uri uri) {
-        cancelCurrentWork(false);
-        final int operation = operationGeneration.incrementAndGet();
-        setProcessingUi(true, "Analizando foto...");
+        cancelWork();
+        int operation = generation.incrementAndGet();
+        beginProgress("Preparando la fotografía…", 2);
         activeTask = executor.submit(() -> {
-            Bitmap result = null;
+            Bitmap loaded = null;
             try {
-                Bitmap decoded = decodeSampled(
-                        uri, ProcessingMemory.photoDecodeMaxSide(MainActivity.this));
-                if (decoded == null) throw new Exception("Foto inválida");
-                result = orient(uri, decoded);
-                final Bitmap delivered = result;
-                result = null;
+                loaded = decodeSampled(uri, ProcessingMemory.photoDecodeMaxSide(this));
+                if (loaded == null) throw new Exception("Imagen no válida");
+                loaded = orient(uri, loaded);
+                Bitmap delivered = loaded;
+                loaded = null;
                 runOnUiThread(() -> {
                     if (!isCurrent(operation)) {
                         recycle(delivered);
                         return;
                     }
-                    setProcessingUi(false, null);
-                    showImage(
-                            delivered,
-                            delivered.getWidth() + " x " + delivered.getHeight() + " px · original");
+                    replaceProjectImage(delivered);
+                    endProgress("Foto preparada · puedes recortarla o mejorarla");
                 });
-            } catch (OutOfMemoryError memoryError) {
-                Log.e(TAG, "Sin memoria al cargar la foto", memoryError);
-                postFailure(operation, "La foto es demasiado grande para la memoria disponible");
+            } catch (OutOfMemoryError error) {
+                Log.e(TAG, "Sin memoria al cargar", error);
+                fail(operation, "La fotografía es demasiado grande para este teléfono");
             } catch (Exception error) {
-                Log.e(TAG, "No se pudo leer la foto", error);
-                postFailure(operation, "No se pudo leer esa foto");
+                Log.e(TAG, "No se pudo cargar", error);
+                fail(operation, "No se pudo abrir esa fotografía");
             } finally {
-                recycle(result);
+                recycle(loaded);
             }
         });
     }
 
-    private void loadVideo(Uri uri) {
-        cancelCurrentWork(false);
-        currentVideoUri = uri;
-        final int operation = operationGeneration.incrementAndGet();
-        setProcessingUi(true, "Analizando video...");
-        activeTask = executor.submit(() -> {
-            VideoFrameProcessor.Selection selection = null;
-            Bitmap result = null;
-            try {
-                VideoFrameProcessor.Info info = VideoFrameProcessor.inspect(this, uri);
-                selection = VideoFrameProcessor.bestFrameAcrossVideo(this, uri, info);
-                try {
-                    result = TemporalFrameFusion.fuse(this, uri, selection, info);
-                } catch (Exception fusionError) {
-                    result = selection.bitmap;
-                }
-                final Bitmap delivered = result;
-                final long selectedTime = selection.timeUs;
-                final int selectedFrame = selection.frameIndex;
-                final int selectedProgress = (int) Math.max(
-                        0, Math.min(1000, selectedTime * 1000L / info.durationUs));
-                result = null;
-                selection = null;
-                runOnUiThread(() -> {
-                    if (!isCurrent(operation)) {
-                        recycle(delivered);
-                        return;
-                    }
-                    currentVideoInfo = info;
-                    videoDurationUs = info.durationUs;
-                    setProcessingUi(false, null);
-                    frameSeek.setProgress(selectedProgress);
-                    videoInfo.setText(
-                            "Fusión temporal · "
-                                    + Math.round(selectedProgress / 10f)
-                                    + "% · "
-                                    + info.durationLabel);
-                    showImage(
-                            delivered,
-                            delivered.getWidth()
-                                    + " x "
-                                    + delivered.getHeight()
-                                    + " px · fotogramas alineados · base "
-                                    + (selectedFrame >= 0 ? selectedFrame : ""));
-                });
-            } catch (OutOfMemoryError memoryError) {
-                Log.e(TAG, "Sin memoria al analizar el video", memoryError);
-                postFailure(operation, "Memoria insuficiente para fusionar ese video");
-            } catch (Exception error) {
-                Log.e(TAG, "No se pudo leer el video", error);
-                postFailure(operation, "No se pudo leer ese video");
-            } finally {
-                if (selection != null) recycle(selection.bitmap);
-                recycle(result);
-            }
-        });
-    }
-
-    private void loadVideoFrame(int progress) {
-        if (loadingFrame || currentVideoUri == null || videoDurationUs <= 0 || currentVideoInfo == null) return;
-        cancelCurrentWork(false);
-        loadingFrame = true;
-        final Uri videoUri = currentVideoUri;
-        final VideoFrameProcessor.Info videoInfoSnapshot = currentVideoInfo;
-        final long duration = videoDurationUs;
-        final long target = duration * progress / 1000L;
-        final int operation = operationGeneration.incrementAndGet();
-        setProcessingUi(true, "Buscando el fotograma más nítido...");
-        activeTask = executor.submit(() -> {
-            VideoFrameProcessor.Selection selection = null;
-            Bitmap frame = null;
-            try {
-                selection = VideoFrameProcessor.sharpestFrame(
-                        this, videoUri, target, videoInfoSnapshot);
-                try {
-                    frame = TemporalFrameFusion.fuse(
-                            this, videoUri, selection, videoInfoSnapshot);
-                } catch (Exception fusionError) {
-                    frame = selection.bitmap;
-                }
-                final Bitmap fused = frame;
-                final int selectedFrame = selection.frameIndex;
-                final int exactProgress = (int) Math.max(
-                        0, Math.min(1000, selection.timeUs * 1000L / duration));
-                frame = null;
-                selection = null;
-                runOnUiThread(() -> {
-                    if (!isCurrent(operation)) {
-                        recycle(fused);
-                        return;
-                    }
-                    loadingFrame = false;
-                    setProcessingUi(false, null);
-                    frameSeek.setProgress(exactProgress);
-                    videoInfo.setText(
-                            "Fusión temporal · "
-                                    + exactProgress / 10f
-                                    + "% · base "
-                                    + (selectedFrame >= 0 ? selectedFrame : "exacta"));
-                    showImage(
-                            fused,
-                            fused.getWidth()
-                                    + " x "
-                                    + fused.getHeight()
-                                    + " px · vecinos alineados y fusionados");
-                });
-            } catch (OutOfMemoryError memoryError) {
-                Log.e(TAG, "Sin memoria al extraer el fotograma", memoryError);
-                postFailure(operation, "Memoria insuficiente para fusionar el fotograma");
-            } catch (Exception error) {
-                Log.e(TAG, "No se pudo extraer el fotograma", error);
-                postFailure(operation, "No se pudo extraer el fotograma");
-            } finally {
-                if (selection != null) recycle(selection.bitmap);
-                recycle(frame);
-            }
-        });
-    }
-
-    private void showImage(Bitmap result, String dimensions) {
-        recycleState();
-        currentBitmap = result;
-        editingOriginal = true;
-        cropView.setBitmap(result);
+    private void replaceProjectImage(Bitmap bitmap) {
+        dismissResult();
+        recycleProjectBitmaps();
+        originalBitmap = bitmap;
+        cropView.setBitmap(bitmap);
         cropView.showFullImage();
-        compareButton.setVisibility(View.GONE); saveButton.setEnabled(false); compareLabel.setText("VISTA ORIGINAL");
-        cropButton.setText("Activar recorte");
-        resolution.setText(dimensions); status.setText(videoModeEnabled ? "Puedes mover el selector o recortar el fotograma antes de mejorarlo" : "Ajusta el recorte, elige un preset y pulsa Mejorar con IA");
+        acceptedSelection = null;
+        savedResultUri = null;
+        viewerBadge.setText("ORIGINAL");
+        uploadButton.setText("Cambiar foto");
+        dimensions.setText(bitmap.getWidth() + " × " + bitmap.getHeight()
+                + " px · salida PNG automática");
+        scroll.setScrollingEnabled(true);
+        refreshActions();
     }
 
-    private void startCrop() {
-        if (processing) {
-            toast("Espera a que termine o cancela el procesamiento");
+    private void toggleCrop() {
+        if (processing) return;
+        if (originalBitmap == null || originalBitmap.isRecycled()) {
+            toast("Primero sube una foto");
             return;
         }
-        if (currentBitmap == null || currentBitmap.isRecycled()) {
-            toast(videoModeEnabled ? "Primero elige un fotograma" : "Primero elige una foto");
-            return;
+        if (cropView.isCropMode()) {
+            acceptCrop();
+        } else {
+            cropView.setBitmap(originalBitmap);
+            cropView.beginCrop();
+            scroll.setScrollingEnabled(false);
+            cropButton.setText("Aceptar");
+            style(cropButton, true);
+            enhanceButton.setEnabled(false);
+            style(enhanceButton, true);
+            viewerBadge.setText("AJUSTANDO RECORTE");
+            status.setText("Mueve el rectángulo o arrastra sus esquinas");
+            dimensions.setText("El desplazamiento de pantalla está bloqueado durante el recorte");
         }
-        editingOriginal = true;
-        cropView.setBitmap(currentBitmap);
-        cropView.beginCrop();
-        compareButton.setVisibility(View.GONE);
-        compareLabel.setText("RECORTE ORIGINAL");
-        cropButton.setText("Recorte activo");
-        status.setText(
-                "Recorte activo · arrastra el interior para moverlo y las esquinas para ajustar");
     }
 
-    private void useFullOriginal() {
-        if (processing) {
-            toast("Espera a que termine o cancela el procesamiento");
-            return;
-        }
-        if (currentBitmap == null || currentBitmap.isRecycled()) {
-            toast(videoModeEnabled ? "Primero elige un fotograma" : "Primero elige una foto");
-            return;
-        }
-        editingOriginal = true;
-        cropView.setBitmap(currentBitmap);
-        cropView.showFullImage();
-        compareButton.setVisibility(View.GONE);
-        compareLabel.setText("IMAGEN COMPLETA");
-        cropButton.setText("Activar recorte");
-        status.setText("Se procesará la imagen original completa");
-    }
-
-    private Bitmap orient(Uri uri, Bitmap bitmap) {
+    private void acceptCrop() {
+        Bitmap cropped = null;
         try {
-            InputStream stream = getContentResolver().openInputStream(uri); ExifInterface exif = new ExifInterface(stream);
-            int o = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL); if (stream != null) stream.close();
-            if (o == ExifInterface.ORIENTATION_ROTATE_90) return rotate(bitmap, 90); if (o == ExifInterface.ORIENTATION_ROTATE_180) return rotate(bitmap, 180); if (o == ExifInterface.ORIENTATION_ROTATE_270) return rotate(bitmap, 270);
-        } catch (Exception ignored) {} return bitmap;
+            acceptedSelection = cropView.getSelectionNormalized();
+            cropped = cropView.crop();
+            recycle(acceptedCrop);
+            acceptedCrop = cropped;
+            cropped = null;
+            cropView.setBitmap(acceptedCrop);
+            cropView.showFullImage();
+            scroll.setScrollingEnabled(true);
+            cropButton.setText("Recortar");
+            viewerBadge.setText("RECORTE");
+            status.setText("Recorte aplicado · la IA también usará el contexto original");
+            dimensions.setText(acceptedCrop.getWidth() + " × " + acceptedCrop.getHeight()
+                    + " px · preparado para mejorar");
+            refreshActions();
+        } catch (OutOfMemoryError error) {
+            recycle(cropped);
+            scroll.setScrollingEnabled(true);
+            toast("No hay memoria suficiente para crear este recorte");
+        }
     }
-
-    private Bitmap rotate(Bitmap bitmap, int degrees) { android.graphics.Matrix m = new android.graphics.Matrix(); m.postRotate(degrees); Bitmap r = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), m, true); if (r != bitmap) bitmap.recycle(); return r; }
 
     private void enhance() {
-        if (processing) {
-            cancelCurrentWork(false);
-            status.setText("Procesado cancelado · la imagen original se mantiene");
+        if (processing) return;
+        if (originalBitmap == null || originalBitmap.isRecycled()) {
+            toast("Primero sube una foto");
             return;
         }
-        if (currentBitmap == null) { toast(videoModeEnabled ? "Primero elige un video" : "Primero elige una foto"); return; }
-        final Bitmap source;
-        try {
-            if (!editingOriginal && originalCrop != null && !originalCrop.isRecycled()) {
-                source = originalCrop.copy(Bitmap.Config.ARGB_8888, false);
-                if (source == null) throw new OutOfMemoryError("No se pudo copiar el original");
-            } else {
-                source = cropView.crop();
-            }
-        } catch (OutOfMemoryError memoryError) {
-            Log.e(TAG, "Sin memoria para crear el recorte", memoryError);
-            status.setText("Memoria insuficiente · reduce el recorte o usa escala 2x");
+        if (cropView.isCropMode()) {
+            toast("Pulsa Aceptar para aplicar el recorte");
             return;
         }
-        if (source == null) return;
-        final int noise = noiseSeek.getProgress();
-        final int detail = detailSeek.getProgress();
-        final int sharp = sharpSeek.getProgress();
-        final int requestedScale = scaleFactor;
-        final int requestedProfile = profile;
-        final boolean videoSource = videoModeEnabled;
-        final boolean restoreFaces = faceRestoreSwitch.isChecked();
-        final int operation = operationGeneration.incrementAndGet();
-        if (enhancedBitmap != null && !enhancedBitmap.isRecycled()) {
-            cropView.setBitmap(currentBitmap);
-            recycle(enhancedBitmap);
-            enhancedBitmap = null;
-        }
-        recycle(originalCrop);
-        originalCrop = null;
-        compareButton.setVisibility(View.GONE);
-        compareLabel.setText("PROCESANDO ORIGINAL");
-        setProcessingUi(
-                true,
-                videoSource
-                        ? "Real-ESRGAN sobre la fusión temporal..."
-                        : "Reconstruyendo detalle con Real-ESRGAN...");
-        activeTask = executor.submit(() -> {
-            Bitmap computed = null;
-            try {
-                String engine;
-                try {
-                    computed = NativeRealEsrgan.enhance(
-                            MainActivity.this,
-                            source,
-                            requestedScale,
-                            requestedProfile,
-                            noise,
-                            detail,
-                            sharp);
-                    engine = videoSource
-                            ? "fusión temporal + Real-ESRGAN"
-                            : "Real-ESRGAN nativo";
-                } catch (InterruptedException cancelled) {
-                    throw cancelled;
-                } catch (Exception | OutOfMemoryError nativeError) {
-                    Log.w(TAG, "Real-ESRGAN no disponible; se usa el motor seguro", nativeError);
-                    System.gc();
-                    computed = ImageEnhancer.enhance(
-                            MainActivity.this,
-                            source,
-                            requestedScale,
-                            requestedProfile,
-                            noise,
-                            detail,
-                            sharp);
-                    engine = videoSource
-                            ? "fusión temporal + motor local"
-                            : "motor local de respaldo";
-                }
-                if (restoreFaces) {
-                    if (!ProcessingMemory.canRunCodeFormer(MainActivity.this, computed)) {
-                        engine += " · CodeFormer omitido por memoria";
-                    } else try {
-                        CodeFormerFaceRestorer.Result restored =
-                                CodeFormerFaceRestorer.restore(
-                                        MainActivity.this,
-                                        computed,
-                                        percent -> runOnUiThread(() -> status.setText(
-                                                percent >= 0
-                                                        ? "Instalando CodeFormer · " + percent + "% · solo se descarga el modelo"
-                                                        : "Instalando CodeFormer · descargando modelo")));
-                        if (restored.bitmap != computed) {
-                            computed.recycle();
-                            computed = restored.bitmap;
-                        }
-                        engine += restored.restoredFaces > 0
-                                ? " + CodeFormer 90% (" + restored.restoredFaces + " rostro)"
-                                : " · sin rostro detectable";
-                    } catch (Exception | OutOfMemoryError faceError) {
-                        Log.w(TAG, "CodeFormer omitido para mantener la estabilidad", faceError);
-                        engine += " · CodeFormer no disponible";
-                    }
-                }
-                final Bitmap result = computed;
-                final String engineName = engine;
-                computed = null;
-                runOnUiThread(() -> {
-                    if (!isCurrent(operation)) {
-                        recycle(source);
-                        recycle(result);
-                        return;
-                    }
-                    recycle(originalCrop);
-                    recycle(enhancedBitmap);
-                    originalCrop = source;
-                    enhancedBitmap = result;
-                    editingOriginal = false;
-                    cropView.setComparison(originalCrop, result);
-                    compareButton.setVisibility(View.VISIBLE);
-                    compareLabel.setText("COMPARACIÓN · arrastra");
-                    cropButton.setText("Modificar recorte");
-                    setProcessingUi(false, null);
-                    enhanceButton.setText("Actualizar resultado");
-                    saveButton.setEnabled(true);
-                    resolution.setText(
-                            result.getWidth()
-                                    + " x "
-                                    + result.getHeight()
-                                    + " px · resultado mejorado");
-                    status.setText(
-                            "Listo · "
-                                    + engineName
-                                    + " · puedes cambiar el recorte o abrir otro archivo");
-                });
-            } catch (InterruptedException cancelled) {
-                Thread.currentThread().interrupt();
-                recycle(source);
-                if (isCurrent(operation)) {
-                    postFailure(operation, "Procesado cancelado · la imagen original se mantiene");
-                }
-            } catch (OutOfMemoryError memoryError) {
-                Log.e(TAG, "Sin memoria durante la mejora", memoryError);
-                recycle(source);
-                System.gc();
-                postFailure(
-                        operation,
-                        "Memoria insuficiente · prueba escala 2x o desactiva Rostro IA");
-            } catch (Exception error) {
-                Log.e(TAG, "No se pudo procesar el archivo", error);
-                recycle(source);
-                postFailure(operation, "No se pudo procesar el archivo");
-            } finally {
-                recycle(computed);
-            }
-        });
-    }
-
-    private void saveImage() {
-        if (enhancedBitmap == null || enhancedBitmap.isRecycled()) return;
         if (Build.VERSION.SDK_INT <= 28
                 && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE)
                 != PackageManager.PERMISSION_GRANTED) {
+            pendingEnhance = true;
             requestPermissions(
                     new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE},
                     STORAGE_PERMISSION);
             return;
         }
 
+        int operation = generation.incrementAndGet();
+        final RectF selection = acceptedSelection == null ? null : new RectF(acceptedSelection);
+        final Bitmap compareSource = copyOf(acceptedCrop != null ? acceptedCrop : originalBitmap);
+        final Bitmap pipelineOriginal = copyOf(originalBitmap);
+        if (compareSource == null || pipelineOriginal == null) {
+            recycle(compareSource);
+            recycle(pipelineOriginal);
+            toast("No hay memoria suficiente para procesar la fotografía");
+            return;
+        }
+        recycle(beforeBitmap);
+        beforeBitmap = compareSource;
+        beginProgress("Analizando desenfoque y movimiento…", 1);
+        activeTask = executor.submit(() -> runEnhancement(operation, selection, pipelineOriginal));
+    }
+
+    private void runEnhancement(int operation, RectF selection, Bitmap pipelineOriginal) {
+        ContextCrop contextCrop = null;
+        Bitmap deblurredContext = null;
+        Bitmap restoredCrop = null;
+        Bitmap enhanced = null;
+        try {
+            contextCrop = createContextCrop(pipelineOriginal, selection);
+            setProgress(operation, 4, "RT-Focuser · reconstruyendo enfoque…");
+            int deblurMax = ProcessingMemory.deblurInputMaxSide(this);
+            deblurredContext = RtFocuserDeblurrer.restore(
+                    this,
+                    contextCrop.bitmap,
+                    deblurMax,
+                    value -> setProgress(operation, 4 + value * 43 / 100,
+                            "RT-Focuser · eliminando desenfoque…"));
+            restoredCrop = contextCrop.extract(deblurredContext);
+            if (restoredCrop != deblurredContext) {
+                recycle(deblurredContext);
+                deblurredContext = null;
+            }
+            int scale = ProcessingMemory.recommendedUpscale(this, restoredCrop);
+            setProgress(operation, 50,
+                    "Real-ESRGAN · reescalando automáticamente ×" + scale + "…");
+            startEstimatedUpscaleProgress(operation);
+            try {
+                enhanced = NativeRealEsrgan.enhance(this, restoredCrop, scale, 0, 18, 62, 52);
+            } catch (InterruptedException cancelled) {
+                throw cancelled;
+            } catch (Exception | OutOfMemoryError nativeError) {
+                Log.w(TAG, "Real-ESRGAN no disponible; usando restauración segura", nativeError);
+                System.gc();
+                enhanced = ImageEnhancer.enhance(this, restoredCrop, scale, 0, 18, 62, 52);
+            }
+            setProgress(operation, 95, "Guardando PNG en el carrete…");
+            Uri saved = savePng(enhanced);
+            Bitmap delivered = enhanced;
+            enhanced = null;
+            runOnUiThread(() -> completeEnhancement(operation, delivered, saved));
+        } catch (InterruptedException cancelled) {
+            Thread.currentThread().interrupt();
+            fail(operation, "Procesamiento cancelado");
+        } catch (OutOfMemoryError error) {
+            Log.e(TAG, "Sin memoria durante la mejora", error);
+            System.gc();
+            fail(operation, "Memoria insuficiente · UGscaler ha conservado el original");
+        } catch (Exception error) {
+            Log.e(TAG, "Error de mejora", error);
+            fail(operation, "No se pudo completar la mejora de esta fotografía");
+        } finally {
+            if (contextCrop != null) {
+                Bitmap contextBitmap = contextCrop.bitmap;
+                contextCrop.recycle();
+                if (contextBitmap != pipelineOriginal) recycle(pipelineOriginal);
+            } else {
+                recycle(pipelineOriginal);
+            }
+            recycle(deblurredContext);
+            recycle(restoredCrop);
+            recycle(enhanced);
+        }
+    }
+
+    private void completeEnhancement(int operation, Bitmap result, Uri saved) {
+        if (!isCurrent(operation)) {
+            recycle(result);
+            return;
+        }
+        recycle(resultBitmap);
+        resultBitmap = result;
+        savedResultUri = saved;
+        setProgressNow(100, "Mejora completada · PNG guardado en el carrete");
+        dimensions.setText(result.getWidth() + " × " + result.getHeight()
+                + " px · PNG sin pérdida · Imágenes/UGscaler");
+        processing = false;
+        activeTask = null;
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        progressBar.setVisibility(View.GONE);
+        percentText.setText("");
+        refreshActions();
+        showResultDialog();
+    }
+
+    private void showResultDialog() {
+        if (resultBitmap == null || resultBitmap.isRecycled()) return;
+        dismissResult();
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(16), dp(14), dp(16), dp(14));
+        card.setBackground(round(panel, 20));
+
+        TextView title = text("Foto mejorada", 21, ink);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        card.addView(title);
+        TextView saved = text("Guardada automáticamente como PNG en Imágenes/UGscaler", 11, muted);
+        saved.setPadding(0, dp(3), 0, dp(10));
+        card.addView(saved);
+
+        ImageView preview = new ImageView(this);
+        preview.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        preview.setAdjustViewBounds(false);
+        preview.setBackgroundColor(Color.rgb(13, 18, 16));
+        preview.setImageBitmap(resultBitmap);
+        preview.setContentDescription("Resultado mejorado");
+        card.addView(preview, new LinearLayout.LayoutParams(-1, dp(resultPreviewHeightDp())));
+
+        TextView hint = text("Mantén pulsado Comparar para ver el original", 11, muted);
+        hint.setGravity(Gravity.CENTER);
+        hint.setPadding(0, dp(8), 0, dp(8));
+        card.addView(hint);
+
+        LinearLayout buttons = new LinearLayout(this);
+        buttons.setGravity(Gravity.CENTER_VERTICAL);
+        HoldCompareButton compare = holdButton("Comparar", false);
+        Button share = button("Compartir", true);
+        Button close = button("Cerrar", false);
+        buttons.addView(compare, weight(1f, 0, 6));
+        buttons.addView(share, weight(1f, 0, 6));
+        buttons.addView(close, weight(1f, 0, 0));
+        card.addView(buttons, fixed(50));
+
+        compare.setOnTouchListener((view, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                preview.setImageBitmap(beforeBitmap);
+                viewerBadge.setText("ORIGINAL");
+                return true;
+            }
+            if (event.getAction() == MotionEvent.ACTION_UP
+                    || event.getAction() == MotionEvent.ACTION_CANCEL) {
+                preview.setImageBitmap(resultBitmap);
+                viewerBadge.setText(acceptedCrop == null ? "ORIGINAL" : "RECORTE");
+                view.performClick();
+                return true;
+            }
+            return true;
+        });
+        share.setOnClickListener(v -> shareResult());
+        close.setOnClickListener(v -> dialog.dismiss());
+
+        dialog.setContentView(card);
+        dialog.setOnDismissListener(ignored -> {
+            if (resultDialog == dialog) resultDialog = null;
+        });
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            WindowManager.LayoutParams params = window.getAttributes();
+            params.width = getResources().getDisplayMetrics().widthPixels - dp(20);
+            params.height = WindowManager.LayoutParams.WRAP_CONTENT;
+            params.dimAmount = .82f;
+            window.setAttributes(params);
+        }
+        resultDialog = dialog;
+        dialog.show();
+        if (window != null) {
+            window.setLayout(
+                    getResources().getDisplayMetrics().widthPixels - dp(20),
+                    WindowManager.LayoutParams.WRAP_CONTENT);
+        }
+    }
+
+    private Uri savePng(Bitmap bitmap) throws Exception {
         String name = "ugscaler_"
                 + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date())
                 + ".png";
-        Uri saved = null;
-        try {
-            ContentValues values = new ContentValues();
-            values.put(MediaStore.Images.Media.DISPLAY_NAME, name);
-            values.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
-            if (Build.VERSION.SDK_INT >= 29) {
-                values.put(
-                        MediaStore.Images.Media.RELATIVE_PATH,
-                        Environment.DIRECTORY_PICTURES + "/UGscaler");
-                values.put(MediaStore.Images.Media.IS_PENDING, 1);
-            } else {
-                File directory = new File(
-                        Environment.getExternalStoragePublicDirectory(
-                                Environment.DIRECTORY_PICTURES),
-                        "UGscaler");
-                if (!directory.exists() && !directory.mkdirs()) {
-                    throw new Exception("No se pudo crear la carpeta UGscaler");
-                }
-                values.put(
-                        MediaStore.Images.Media.DATA,
-                        new File(directory, name).getAbsolutePath());
+        ContentValues values = new ContentValues();
+        values.put(MediaStore.Images.Media.DISPLAY_NAME, name);
+        values.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
+        if (Build.VERSION.SDK_INT >= 29) {
+            values.put(MediaStore.Images.Media.RELATIVE_PATH,
+                    Environment.DIRECTORY_PICTURES + "/UGscaler");
+            values.put(MediaStore.Images.Media.IS_PENDING, 1);
+        } else {
+            File directory = new File(
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
+                    "UGscaler");
+            if (!directory.exists() && !directory.mkdirs()) {
+                throw new Exception("No se pudo crear la carpeta UGscaler");
             }
-
-            saved = getContentResolver().insert(
-                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
-            if (saved == null) throw new Exception("No se pudo crear el archivo");
-            try (OutputStream output = getContentResolver().openOutputStream(saved, "w")) {
-                if (output == null
-                        || !enhancedBitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) {
-                    throw new Exception("No se pudo escribir la imagen");
+            values.put(MediaStore.Images.Media.DATA, new File(directory, name).getAbsolutePath());
+        }
+        Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+        if (uri == null) throw new Exception("No se pudo crear el PNG");
+        try {
+            try (OutputStream output = getContentResolver().openOutputStream(uri, "w")) {
+                if (output == null || !bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) {
+                    throw new Exception("No se pudo escribir el PNG");
                 }
             }
             if (Build.VERSION.SDK_INT >= 29) {
                 ContentValues ready = new ContentValues();
                 ready.put(MediaStore.Images.Media.IS_PENDING, 0);
-                getContentResolver().update(saved, ready, null, null);
+                getContentResolver().update(uri, ready, null, null);
             }
-            resolution.setText(
-                    enhancedBitmap.getWidth()
-                            + " x "
-                            + enhancedBitmap.getHeight()
-                            + " px · PNG guardado sin pérdida");
-            status.setText("PNG guardado en Imágenes / UGscaler");
-            showSavedImageActions(saved, name);
-        } catch (OutOfMemoryError memoryError) {
-            if (saved != null) getContentResolver().delete(saved, null, null);
-            Log.e(TAG, "Sin memoria al exportar", memoryError);
-            toast("No hay memoria suficiente para exportar esta resolución");
+            return uri;
         } catch (Exception error) {
-            if (saved != null) getContentResolver().delete(saved, null, null);
-            Log.e(TAG, "No se pudo guardar el PNG", error);
-            toast("No se pudo guardar el PNG");
+            getContentResolver().delete(uri, null, null);
+            throw error;
         }
     }
 
-    private void showSavedImageActions(Uri uri, String name) {
-        new AlertDialog.Builder(this)
-                .setTitle("PNG guardado")
-                .setMessage(name + "\nImágenes / UGscaler")
-                .setPositiveButton("Ver imagen", (dialog, which) -> openSavedImage(uri))
-                .setNeutralButton("Compartir", (dialog, which) -> shareSavedImage(uri))
-                .setNegativeButton("Cerrar", null)
-                .show();
-    }
-
-    private void openSavedImage(Uri uri) {
-        Intent view = new Intent(Intent.ACTION_VIEW);
-        view.setDataAndType(uri, "image/png");
-        view.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        view.setClipData(ClipData.newUri(getContentResolver(), "UGscaler PNG", uri));
-        try {
-            startActivity(view);
-        } catch (Exception error) {
-            toast("No hay una aplicación disponible para abrir imágenes");
+    private void shareResult() {
+        if (savedResultUri == null) {
+            toast("La imagen todavía no está disponible para compartir");
+            return;
         }
-    }
-
-    private void shareSavedImage(Uri uri) {
         Intent share = new Intent(Intent.ACTION_SEND);
         share.setType("image/png");
-        share.putExtra(Intent.EXTRA_STREAM, uri);
+        share.putExtra(Intent.EXTRA_STREAM, savedResultUri);
         share.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        share.setClipData(ClipData.newUri(getContentResolver(), "UGscaler PNG", uri));
+        share.setClipData(ClipData.newUri(
+                getContentResolver(), "UGscaler PNG", savedResultUri));
         try {
-            startActivity(Intent.createChooser(share, "Compartir PNG mejorado"));
+            startActivity(Intent.createChooser(share, "Compartir foto mejorada"));
         } catch (Exception error) {
             toast("No hay una aplicación disponible para compartir");
         }
     }
 
-    private void setVideoMode(boolean enabled) { videoModeEnabled = enabled; refreshModeUi(); }
-    private void refreshModeUi() { if (photoMode == null) return; style(photoMode, !videoModeEnabled); style(videoMode, videoModeEnabled); videoControlsView.setVisibility(videoModeEnabled ? View.VISIBLE : View.GONE); frameSeek.setVisibility(videoModeEnabled ? View.VISIBLE : View.GONE); videoInfo.setVisibility(videoModeEnabled ? View.VISIBLE : View.GONE); saveButton.setText("Guardar PNG"); }
-
-    private void clearEditor() {
-        cancelCurrentWork(false);
-        currentVideoUri = null;
-        currentVideoInfo = null;
-        videoDurationUs = 0;
-        loadingFrame = false;
-        editingOriginal = true;
-        if (cropView != null) {
-            cropView.setBitmap(null);
-            cropView.showFullImage();
+    private ContextCrop createContextCrop(Bitmap original, RectF selection) {
+        if (selection == null) {
+            return new ContextCrop(original, new RectF(0, 0, 1, 1));
         }
-        recycleState();
-        compareButton.setVisibility(View.GONE);
-        saveButton.setEnabled(false);
-        cropButton.setText("Activar recorte");
-        enhanceButton.setText("Mejorar con IA");
-        enhanceButton.setEnabled(true);
-        status.setText("Listo para mejorar · elige una foto o un video");
-        resolution.setText("Salida estimada · todavía no procesada");
-        videoInfo.setText("Video · buscando el mejor fotograma");
+        int width = original.getWidth();
+        int height = original.getHeight();
+        float marginX = Math.max(.035f, selection.width() * .14f);
+        float marginY = Math.max(.035f, selection.height() * .14f);
+        float left = Math.max(0f, selection.left - marginX);
+        float top = Math.max(0f, selection.top - marginY);
+        float right = Math.min(1f, selection.right + marginX);
+        float bottom = Math.min(1f, selection.bottom + marginY);
+        int x = Math.max(0, Math.round(left * width));
+        int y = Math.max(0, Math.round(top * height));
+        int r = Math.min(width, Math.round(right * width));
+        int b = Math.min(height, Math.round(bottom * height));
+        Bitmap contextual = Bitmap.createBitmap(original, x, y, Math.max(1, r - x), Math.max(1, b - y));
+        if (contextual == original) contextual = copyOf(original);
+        RectF target = new RectF(
+                (selection.left - left) / (right - left),
+                (selection.top - top) / (bottom - top),
+                (selection.right - left) / (right - left),
+                (selection.bottom - top) / (bottom - top));
+        return new ContextCrop(contextual, target);
     }
 
-    private void recycleState() {
-        recycle(currentBitmap);
-        recycle(enhancedBitmap);
-        recycle(originalCrop);
-        currentBitmap = null;
-        enhancedBitmap = null;
-        originalCrop = null;
+    private void beginProgress(String message, int initial) {
+        processing = true;
+        progressValue = 0;
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        progressBar.setVisibility(View.VISIBLE);
+        setProgressNow(initial, message);
+        refreshActions();
     }
 
-    private void cancelCurrentWork(boolean showMessage) {
-        operationGeneration.incrementAndGet();
+    private void setProgress(int operation, int value, String message) {
+        runOnUiThread(() -> {
+            if (isCurrent(operation) && processing) setProgressNow(value, message);
+        });
+    }
+
+    private void setProgressNow(int value, String message) {
+        progressValue = Math.max(progressValue, Math.min(100, value));
+        progressBar.setProgress(progressValue, true);
+        percentText.setText(progressValue + "%");
+        status.setText(message);
+    }
+
+    private void startEstimatedUpscaleProgress(int operation) {
+        handler.postDelayed(new Runnable() {
+            @Override public void run() {
+                if (!isCurrent(operation) || !processing || progressValue >= 92) return;
+                setProgressNow(progressValue + 1, "Real-ESRGAN · reconstruyendo detalle…");
+                handler.postDelayed(this, 650);
+            }
+        }, 650);
+    }
+
+    private void endProgress(String message) {
+        processing = false;
+        activeTask = null;
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        progressValue = 0;
+        progressBar.setVisibility(View.GONE);
+        percentText.setText("");
+        status.setText(message);
+        refreshActions();
+    }
+
+    private void fail(int operation, String message) {
+        runOnUiThread(() -> {
+            if (!isCurrent(operation)) return;
+            endProgress(message);
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+        });
+    }
+
+    private void refreshActions() {
+        boolean hasImage = originalBitmap != null && !originalBitmap.isRecycled();
+        cropButton.setEnabled(hasImage && !processing);
+        enhanceButton.setEnabled(hasImage && !processing && !cropView.isCropMode());
+        uploadButton.setEnabled(!processing);
+        newProjectButton.setEnabled(!processing || hasImage);
+        style(cropButton, cropView.isCropMode());
+        style(enhanceButton, true);
+        style(uploadButton, false);
+        style(newProjectButton, false);
+    }
+
+    private void newProject() {
+        dismissResult();
+        cancelWork();
+        cropView.setBitmap(null);
+        scroll.setScrollingEnabled(true);
+        recycleProjectBitmaps();
+        acceptedSelection = null;
+        savedResultUri = null;
+        viewerBadge.setText("SIN FOTO");
+        uploadButton.setText("Subir foto");
+        cropButton.setText("Recortar");
+        progressBar.setVisibility(View.GONE);
+        percentText.setText("");
+        status.setText("Sube una foto para empezar");
+        dimensions.setText("Procesado privado · sin conexión · salida PNG");
+        refreshActions();
+    }
+
+    private void cancelWork() {
+        generation.incrementAndGet();
         Future<?> task = activeTask;
         activeTask = null;
         if (task != null) task.cancel(true);
         NativeRealEsrgan.cancelActive();
         processing = false;
-        loadingFrame = false;
+        progressValue = 0;
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        if (enhanceButton != null) {
-            enhanceButton.setEnabled(true);
-            enhanceButton.setText(
-                    enhancedBitmap == null ? "Mejorar con IA" : "Actualizar resultado");
-        }
-        if (showMessage && status != null) {
-            status.setText("Procesado cancelado · la imagen original se mantiene");
+    }
+
+    private void dismissResult() {
+        if (resultDialog != null) {
+            resultDialog.dismiss();
+            resultDialog = null;
         }
     }
 
-    private void setProcessingUi(boolean busy, String message) {
-        processing = busy;
-        if (busy) {
-            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-            enhanceButton.setText("Cancelar");
-            enhanceButton.setEnabled(true);
-            saveButton.setEnabled(false);
-        } else {
-            activeTask = null;
-            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-            enhanceButton.setText(
-                    enhancedBitmap == null ? "Mejorar con IA" : "Actualizar resultado");
-            enhanceButton.setEnabled(true);
-        }
-        if (message != null) status.setText(message);
-    }
-
-    private void postFailure(int operation, String message) {
-        runOnUiThread(() -> {
-            if (!isCurrent(operation)) return;
-            loadingFrame = false;
-            compareLabel.setText("VISTA ORIGINAL");
-            cropButton.setText("Activar recorte");
-            setProcessingUi(false, message);
-        });
-    }
-
-    private boolean isCurrent(int operation) {
-        return !destroyed && operation == operationGeneration.get();
+    private void recycleProjectBitmaps() {
+        recycle(originalBitmap);
+        recycle(acceptedCrop);
+        recycle(beforeBitmap);
+        recycle(resultBitmap);
+        originalBitmap = null;
+        acceptedCrop = null;
+        beforeBitmap = null;
+        resultBitmap = null;
     }
 
     private Bitmap decodeSampled(Uri uri, int maxSide) throws Exception {
         BitmapFactory.Options bounds = new BitmapFactory.Options();
         bounds.inJustDecodeBounds = true;
         try (InputStream input = getContentResolver().openInputStream(uri)) {
-            if (input == null) throw new Exception("No se pudo abrir la foto");
             BitmapFactory.decodeStream(input, null, bounds);
         }
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
-            throw new Exception("Dimensiones de foto inválidas");
-        }
-        int longest = Math.max(bounds.outWidth, bounds.outHeight);
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) throw new Exception("Imagen no válida");
         int sample = 1;
-        while ((longest + sample - 1L) / sample > maxSide
-                && sample <= Integer.MAX_VALUE / 2) {
+        while (Math.max(bounds.outWidth / sample, bounds.outHeight / sample) > maxSide * 1.35f) {
             sample *= 2;
         }
-        BitmapFactory.Options decode = new BitmapFactory.Options();
-        decode.inSampleSize = sample;
-        decode.inPreferredConfig = Bitmap.Config.ARGB_8888;
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inSampleSize = sample;
+        options.inPreferredConfig = Bitmap.Config.ARGB_8888;
         try (InputStream input = getContentResolver().openInputStream(uri)) {
-            if (input == null) throw new Exception("No se pudo abrir la foto");
-            Bitmap bitmap = BitmapFactory.decodeStream(input, null, decode);
-            if (bitmap == null) throw new Exception("No se pudo decodificar la foto");
-            return bitmap;
+            Bitmap decoded = BitmapFactory.decodeStream(input, null, options);
+            if (decoded == null) throw new Exception("No se pudo decodificar");
+            Bitmap fitted = ProcessingMemory.fit(decoded, maxSide);
+            if (fitted != decoded) decoded.recycle();
+            return fitted;
         }
+    }
+
+    private Bitmap orient(Uri uri, Bitmap bitmap) {
+        try (InputStream stream = getContentResolver().openInputStream(uri)) {
+            ExifInterface exif = new ExifInterface(stream);
+            int orientation = exif.getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
+            if (orientation == ExifInterface.ORIENTATION_ROTATE_90) return rotate(bitmap, 90);
+            if (orientation == ExifInterface.ORIENTATION_ROTATE_180) return rotate(bitmap, 180);
+            if (orientation == ExifInterface.ORIENTATION_ROTATE_270) return rotate(bitmap, 270);
+        } catch (Exception ignored) {
+            // The decoded bitmap is still usable when EXIF is absent.
+        }
+        return bitmap;
+    }
+
+    private Bitmap rotate(Bitmap bitmap, int degrees) {
+        android.graphics.Matrix matrix = new android.graphics.Matrix();
+        matrix.postRotate(degrees);
+        Bitmap rotated = Bitmap.createBitmap(
+                bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+        if (rotated != bitmap) bitmap.recycle();
+        return rotated;
+    }
+
+    private boolean isCurrent(int operation) {
+        return !destroyed && operation == generation.get();
+    }
+
+    @Override public void onBackPressed() {
+        if (resultDialog != null) {
+            dismissResult();
+        } else if (cropView.isCropMode()) {
+            scroll.setScrollingEnabled(true);
+            cropView.setBitmap(acceptedCrop != null ? acceptedCrop : originalBitmap);
+            cropView.showFullImage();
+            cropButton.setText("Recortar");
+            refreshActions();
+        } else if (originalBitmap != null) {
+            newProject();
+        } else {
+            super.onBackPressed();
+        }
+    }
+
+    @Override protected void onDestroy() {
+        destroyed = true;
+        dismissResult();
+        cancelWork();
+        executor.shutdownNow();
+        cropView.setBitmap(null);
+        recycleProjectBitmaps();
+        super.onDestroy();
+    }
+
+    @Override public void onRequestPermissionsResult(
+            int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == STORAGE_PERMISSION && pendingEnhance) {
+            pendingEnhance = false;
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                enhance();
+            } else {
+                toast("Se necesita permiso para guardar el PNG automáticamente");
+            }
+        }
+    }
+
+    private int workspaceHeightDp() {
+        int screen = getResources().getDisplayMetrics().heightPixels;
+        int dpHeight = Math.round(screen / getResources().getDisplayMetrics().density);
+        return Math.max(280, Math.min(510, Math.round(dpHeight * .46f)));
+    }
+
+    private int resultPreviewHeightDp() {
+        int screen = getResources().getDisplayMetrics().heightPixels;
+        int dpHeight = Math.round(screen / getResources().getDisplayMetrics().density);
+        return Math.max(300, Math.min(570, Math.round(dpHeight * .58f)));
+    }
+
+    private TextView text(String value, int size, int color) {
+        TextView view = new TextView(this);
+        view.setText(value);
+        view.setTextSize(size);
+        view.setTextColor(color);
+        view.setGravity(Gravity.CENTER_VERTICAL);
+        view.setLineSpacing(0, 1.08f);
+        return view;
+    }
+
+    private Button button(String value, boolean primary) {
+        Button button = new Button(this);
+        button.setText(value);
+        button.setContentDescription(value);
+        button.setTextSize(13);
+        button.setAllCaps(false);
+        button.setMinHeight(dp(48));
+        button.setMinimumHeight(dp(48));
+        button.setGravity(Gravity.CENTER);
+        button.setPadding(dp(9), 0, dp(9), 0);
+        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        button.setElevation(dp(1));
+        style(button, primary);
+        return button;
+    }
+
+    private HoldCompareButton holdButton(String value, boolean primary) {
+        HoldCompareButton button = new HoldCompareButton(this);
+        button.setText(value);
+        button.setContentDescription(value);
+        button.setTextSize(13);
+        button.setAllCaps(false);
+        button.setMinHeight(dp(48));
+        button.setMinimumHeight(dp(48));
+        button.setGravity(Gravity.CENTER);
+        button.setPadding(dp(9), 0, dp(9), 0);
+        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        button.setElevation(dp(1));
+        style(button, primary);
+        return button;
+    }
+
+    private void style(Button button, boolean primary) {
+        button.setTextColor(primary ? Color.rgb(18, 24, 19) : ink);
+        button.setBackground(round(primary ? accent : panel, 14));
+        button.setAlpha(button.isEnabled() ? 1f : .42f);
+    }
+
+    private android.graphics.drawable.GradientDrawable round(int color, int radius) {
+        android.graphics.drawable.GradientDrawable drawable =
+                new android.graphics.drawable.GradientDrawable();
+        drawable.setColor(color);
+        drawable.setCornerRadius(dp(radius));
+        drawable.setStroke(dp(1), Color.rgb(52, 67, 58));
+        return drawable;
+    }
+
+    private LinearLayout.LayoutParams fixed(int height) {
+        return new LinearLayout.LayoutParams(-1, dp(height));
+    }
+
+    private LinearLayout.LayoutParams fixedWidth(int width) {
+        return new LinearLayout.LayoutParams(dp(width), -1);
+    }
+
+    private LinearLayout.LayoutParams spacedFixed(int height, int bottom) {
+        LinearLayout.LayoutParams params = fixed(height);
+        params.bottomMargin = dp(bottom);
+        return params;
+    }
+
+    private LinearLayout.LayoutParams spacedWrap(int bottom) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+        params.bottomMargin = dp(bottom);
+        return params;
+    }
+
+    private LinearLayout.LayoutParams weight(float weight, int left, int right) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, -1, weight);
+        params.leftMargin = dp(left);
+        params.rightMargin = dp(right);
+        return params;
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+
+    private void toast(String value) {
+        Toast.makeText(this, value, Toast.LENGTH_SHORT).show();
+    }
+
+    private static Bitmap copyOf(Bitmap source) {
+        if (source == null || source.isRecycled()) return null;
+        return source.copy(Bitmap.Config.ARGB_8888, false);
     }
 
     private static void recycle(Bitmap bitmap) {
         if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
     }
 
-    @Override public void onBackPressed() {
-        if (processing || currentBitmap != null || currentVideoUri != null) clearEditor();
-        else super.onBackPressed();
+    private static final class ScrollViewLayoutParams extends android.widget.ScrollView.LayoutParams {
+        ScrollViewLayoutParams(int width, int height) {
+            super(width, height);
+        }
     }
 
-    @Override protected void onDestroy() {
-        destroyed = true;
-        cancelCurrentWork(false);
-        executor.shutdownNow();
-        recycleState();
-        super.onDestroy();
-    }
-    @Override public void onRequestPermissionsResult(
-            int request, String[] permissions, int[] grants) {
-        super.onRequestPermissionsResult(request, permissions, grants);
-        if (grants.length == 0 || grants[0] != PackageManager.PERMISSION_GRANTED) return;
-        if (request == CAMERA_PERMISSION) takePhoto();
-        if (request == STORAGE_PERMISSION) saveImage();
-    }
+    private static final class ContextCrop {
+        final Bitmap bitmap;
+        final RectF target;
 
-    private TextView text(String value, int size, int color) { TextView v = new TextView(this); v.setText(value); v.setTextSize(size); v.setTextColor(color); v.setGravity(Gravity.CENTER_VERTICAL); v.setLineSpacing(0, 1.06f); return v; }
-    private Button button(String value, boolean selected) { Button b = new Button(this); b.setText(value); b.setContentDescription(value); b.setTextSize(13); b.setAllCaps(false); b.setMinHeight(dp(44)); b.setMinimumHeight(dp(44)); b.setGravity(Gravity.CENTER); b.setPadding(dp(7), 0, dp(7), 0); b.setTypeface(Typeface.DEFAULT, Typeface.BOLD); b.setElevation(dp(1)); style(b, selected); return b; }
-    private void style(Button b, boolean selected) { b.setTextColor(selected ? Color.rgb(20, 25, 18) : ink); b.setBackground(round(selected ? accent : panel, 13)); b.setAlpha(b.isEnabled() ? 1f : .45f); }
-    private android.graphics.drawable.GradientDrawable round(int color, int radius) { android.graphics.drawable.GradientDrawable d = new android.graphics.drawable.GradientDrawable(); d.setColor(color); d.setCornerRadius(dp(radius)); d.setStroke(dp(1), Color.rgb(55, 68, 59)); return d; }
-    private LinearLayout.LayoutParams fixed(int h) { return new LinearLayout.LayoutParams(-1, dp(h)); }
-    private LinearLayout.LayoutParams fixedWidth(int w) { return new LinearLayout.LayoutParams(dp(w), -2); }
-    private LinearLayout.LayoutParams spacedFixed(int h, int bottom) {
-        LinearLayout.LayoutParams params = fixed(h);
-        params.bottomMargin = dp(bottom);
-        return params;
+        ContextCrop(Bitmap bitmap, RectF target) {
+            if (bitmap == null) throw new OutOfMemoryError("No se pudo preparar el contexto");
+            this.bitmap = bitmap;
+            this.target = target;
+        }
+
+        Bitmap extract(Bitmap restored) {
+            if (target.left <= 0f && target.top <= 0f
+                    && target.right >= 1f && target.bottom >= 1f) return restored;
+            int x = Math.max(0, Math.round(target.left * restored.getWidth()));
+            int y = Math.max(0, Math.round(target.top * restored.getHeight()));
+            int right = Math.min(restored.getWidth(), Math.round(target.right * restored.getWidth()));
+            int bottom = Math.min(restored.getHeight(), Math.round(target.bottom * restored.getHeight()));
+            return Bitmap.createBitmap(
+                    restored, x, y, Math.max(1, right - x), Math.max(1, bottom - y));
+        }
+
+        void recycle() {
+            MainActivity.recycle(bitmap);
+        }
     }
-    private LinearLayout.LayoutParams spacedWrap(int bottom) {
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
-        params.bottomMargin = dp(bottom);
-        return params;
-    }
-    private LinearLayout.LayoutParams weight(float w, int left, int right) { LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, -1, w); p.leftMargin = dp(left); p.rightMargin = dp(right); return p; }
-    private int viewportHeightDp() {
-        float density = getResources().getDisplayMetrics().density;
-        int widthDp = Math.round(getResources().getDisplayMetrics().widthPixels / density) - 24;
-        return Math.max(280, Math.min(430, Math.round(widthDp * .92f)));
-    }
-    private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
-    private void toast(String value) { runOnUiThread(() -> Toast.makeText(this, value, Toast.LENGTH_SHORT).show()); }
 }

@@ -43,6 +43,26 @@ public final class TemporalFrameFusion {
             Uri uri,
             VideoFrameProcessor.Selection selection,
             VideoFrameProcessor.Info info) throws Exception {
+        Bitmap safeReference = ProcessingMemory.fit(
+                selection.bitmap, ProcessingMemory.videoFusionMaxSide(context));
+        if (safeReference != selection.bitmap) {
+            if (!selection.bitmap.isRecycled()) selection.bitmap.recycle();
+            selection = new VideoFrameProcessor.Selection(
+                    safeReference, selection.timeUs, selection.frameIndex);
+        }
+        try {
+            return fuseInternal(context, uri, selection, info);
+        } catch (OutOfMemoryError memoryError) {
+            System.gc();
+            return selection.bitmap;
+        }
+    }
+
+    private static Bitmap fuseInternal(
+            Context context,
+            Uri uri,
+            VideoFrameProcessor.Selection selection,
+            VideoFrameProcessor.Info info) throws Exception {
         if (Build.VERSION.SDK_INT < 28
                 || selection.frameIndex < 0
                 || info.frameCount < 3
@@ -56,6 +76,9 @@ public final class TemporalFrameFusion {
         try {
             retriever.setDataSource(context, uri);
             for (int offset = -RADIUS; offset <= RADIUS; offset++) {
+                if (Thread.currentThread().isInterrupted()) {
+                    throw new InterruptedException("Fusión temporal cancelada");
+                }
                 int index = clamp(selection.frameIndex + offset, 0, info.frameCount - 1);
                 if (index == selection.frameIndex) {
                     frames.add(selection.bitmap);
@@ -63,6 +86,14 @@ public final class TemporalFrameFusion {
                     continue;
                 }
                 Bitmap frame = retriever.getFrameAtIndex(index);
+                Bitmap safeFrame = frame == null
+                        ? null
+                        : ProcessingMemory.fit(
+                                frame, ProcessingMemory.videoFusionMaxSide(context));
+                if (safeFrame != frame && frame != null && !frame.isRecycled()) {
+                    frame.recycle();
+                }
+                frame = safeFrame;
                 if (frame != null
                         && frame.getWidth() == selection.bitmap.getWidth()
                         && frame.getHeight() == selection.bitmap.getHeight()) {
@@ -83,22 +114,25 @@ public final class TemporalFrameFusion {
             int referenceIndex = offsets.indexOf(0);
             Bitmap reference = frames.get(referenceIndex);
             List<AlignedFrame> aligned = new ArrayList<>();
-            aligned.add(AlignedFrame.reference(reference));
-            for (int i = 0; i < frames.size(); i++) {
-                if (i == referenceIndex) continue;
-                AlignedFrame candidate = align(frames.get(i), reference);
-                if (candidate != null) aligned.add(candidate);
-            }
-            if (aligned.size() < 3) {
+            try {
+                aligned.add(AlignedFrame.reference(reference));
+                for (int i = 0; i < frames.size(); i++) {
+                    if (Thread.currentThread().isInterrupted()) {
+                        throw new InterruptedException("Fusión temporal cancelada");
+                    }
+                    if (i == referenceIndex) continue;
+                    AlignedFrame candidate = align(frames.get(i), reference);
+                    if (candidate != null) aligned.add(candidate);
+                }
+                if (aligned.size() < 3) return selection.bitmap;
+                Bitmap result = merge(reference, aligned);
+                if (result != selection.bitmap && !selection.bitmap.isRecycled()) {
+                    selection.bitmap.recycle();
+                }
+                return result;
+            } finally {
                 releaseAligned(aligned);
-                return selection.bitmap;
             }
-            Bitmap result = merge(reference, aligned);
-            releaseAligned(aligned);
-            if (result != selection.bitmap && !selection.bitmap.isRecycled()) {
-                selection.bitmap.recycle();
-            }
-            return result;
         } finally {
             recycleNeighbours(frames, selection.bitmap);
         }
@@ -113,7 +147,20 @@ public final class TemporalFrameFusion {
         Mat referenceGray = new Mat();
         Mat descriptorsCandidate = new Mat();
         Mat descriptorsReference = new Mat();
-        Mat homography = new Mat();
+        Mat candidateMask = new Mat();
+        Mat referenceMask = new Mat();
+        MatOfKeyPoint candidateKeys = new MatOfKeyPoint();
+        MatOfKeyPoint referenceKeys = new MatOfKeyPoint();
+        MatOfPoint2f sourceMat = new MatOfPoint2f();
+        MatOfPoint2f targetMat = new MatOfPoint2f();
+        MatOfByte inliers = new MatOfByte();
+        Mat homography = null;
+        Mat warped = new Mat();
+        Mat valid = null;
+        Mat warpedValid = new Mat();
+        ORB orb = null;
+        DescriptorMatcher matcher = null;
+        List<MatOfDMatch> matches = new ArrayList<>();
         try {
             Utils.bitmapToMat(candidate, candidateRgba);
             Utils.bitmapToMat(reference, referenceRgba);
@@ -127,16 +174,14 @@ public final class TemporalFrameFusion {
             Imgproc.cvtColor(candidateSmall, candidateGray, Imgproc.COLOR_RGBA2GRAY);
             Imgproc.cvtColor(referenceSmall, referenceGray, Imgproc.COLOR_RGBA2GRAY);
 
-            ORB orb = ORB.create(1800);
-            MatOfKeyPoint candidateKeys = new MatOfKeyPoint();
-            MatOfKeyPoint referenceKeys = new MatOfKeyPoint();
-            orb.detectAndCompute(candidateGray, new Mat(), candidateKeys, descriptorsCandidate);
-            orb.detectAndCompute(referenceGray, new Mat(), referenceKeys, descriptorsReference);
+            orb = ORB.create(1400);
+            orb.detectAndCompute(
+                    candidateGray, candidateMask, candidateKeys, descriptorsCandidate);
+            orb.detectAndCompute(
+                    referenceGray, referenceMask, referenceKeys, descriptorsReference);
             if (descriptorsCandidate.empty() || descriptorsReference.empty()) return null;
 
-            DescriptorMatcher matcher =
-                    DescriptorMatcher.create(DescriptorMatcher.BRUTEFORCE_HAMMING);
-            List<MatOfDMatch> matches = new ArrayList<>();
+            matcher = DescriptorMatcher.create(DescriptorMatcher.BRUTEFORCE_HAMMING);
             matcher.knnMatch(descriptorsCandidate, descriptorsReference, matches, 2);
             KeyPoint[] sourceKeys = candidateKeys.toArray();
             KeyPoint[] targetKeys = referenceKeys.toArray();
@@ -148,23 +193,14 @@ public final class TemporalFrameFusion {
                     sourcePoints.add(sourceKeys[pairValues[0].queryIdx].pt);
                     targetPoints.add(targetKeys[pairValues[0].trainIdx].pt);
                 }
-                pair.release();
             }
             if (sourcePoints.size() < 18) return null;
 
-            MatOfPoint2f sourceMat = new MatOfPoint2f();
-            MatOfPoint2f targetMat = new MatOfPoint2f();
             sourceMat.fromList(sourcePoints);
             targetMat.fromList(targetPoints);
-            MatOfByte inliers = new MatOfByte();
             homography = Calib3d.findHomography(
                     sourceMat, targetMat, Calib3d.RANSAC, 3.0, inliers, 2000, .995);
             int inlierCount = Core.countNonZero(inliers);
-            sourceMat.release();
-            targetMat.release();
-            inliers.release();
-            candidateKeys.release();
-            referenceKeys.release();
             if (homography.empty() || inlierCount < 12) return null;
 
             if (scale < 1.0) {
@@ -177,9 +213,10 @@ public final class TemporalFrameFusion {
                 homography.put(0, 0, h);
             }
 
-            Mat warped = new Mat();
-            Mat valid = Mat.ones(candidate.getHeight(), candidate.getWidth(), org.opencv.core.CvType.CV_8UC1);
-            Mat warpedValid = new Mat();
+            valid = Mat.ones(
+                    candidate.getHeight(),
+                    candidate.getWidth(),
+                    org.opencv.core.CvType.CV_8UC1);
             Size output = new Size(reference.getWidth(), reference.getHeight());
             Imgproc.warpPerspective(
                     candidateRgba, warped, homography, output, Imgproc.INTER_LINEAR,
@@ -187,19 +224,19 @@ public final class TemporalFrameFusion {
             Imgproc.warpPerspective(
                     valid, warpedValid, homography, output, Imgproc.INTER_NEAREST,
                     Core.BORDER_CONSTANT, Scalar.all(0));
-            valid.release();
 
             Bitmap warpedBitmap = Bitmap.createBitmap(
                     reference.getWidth(), reference.getHeight(), Bitmap.Config.ARGB_8888);
             Utils.matToBitmap(warped, warpedBitmap);
             byte[] mask = new byte[reference.getWidth() * reference.getHeight()];
             warpedValid.get(0, 0, mask);
-            warped.release();
-            warpedValid.release();
             return new AlignedFrame(warpedBitmap, mask, false);
         } catch (RuntimeException ignored) {
             return null;
         } finally {
+            for (MatOfDMatch pair : matches) pair.release();
+            if (matcher != null) matcher.clear();
+            if (orb != null) orb.clear();
             candidateRgba.release();
             referenceRgba.release();
             candidateSmall.release();
@@ -208,47 +245,69 @@ public final class TemporalFrameFusion {
             referenceGray.release();
             descriptorsCandidate.release();
             descriptorsReference.release();
-            homography.release();
+            candidateMask.release();
+            referenceMask.release();
+            candidateKeys.release();
+            referenceKeys.release();
+            sourceMat.release();
+            targetMat.release();
+            inliers.release();
+            if (homography != null) homography.release();
+            warped.release();
+            if (valid != null) valid.release();
+            warpedValid.release();
         }
     }
 
-    private static Bitmap merge(Bitmap reference, List<AlignedFrame> frames) {
+    private static Bitmap merge(Bitmap reference, List<AlignedFrame> frames)
+            throws InterruptedException {
         int width = reference.getWidth();
         int height = reference.getHeight();
-        int count = width * height;
-        int[][] pixels = new int[frames.size()][count];
-        for (int i = 0; i < frames.size(); i++) {
-            frames.get(i).bitmap.getPixels(pixels[i], 0, width, 0, 0, width, height);
-        }
-        int[] output = new int[count];
-        for (int index = 0; index < count; index++) {
-            int base = pixels[0][index];
-            int baseR = android.graphics.Color.red(base);
-            int baseG = android.graphics.Color.green(base);
-            int baseB = android.graphics.Color.blue(base);
-            double sumR = baseR, sumG = baseG, sumB = baseB, weightSum = 1.0;
-            for (int frame = 1; frame < frames.size(); frame++) {
-                if ((frames.get(frame).mask[index] & 0xff) == 0) continue;
-                int color = pixels[frame][index];
-                int r = android.graphics.Color.red(color);
-                int g = android.graphics.Color.green(color);
-                int b = android.graphics.Color.blue(color);
-                double difference = Math.abs(r - baseR) * .30
-                        + Math.abs(g - baseG) * .59 + Math.abs(b - baseB) * .11;
-                if (difference > 34.0) continue;
-                double weight = .72 * Math.exp(-(difference * difference) / (2.0 * 18.0 * 18.0));
-                sumR += r * weight;
-                sumG += g * weight;
-                sumB += b * weight;
-                weightSum += weight;
-            }
-            output[index] = android.graphics.Color.rgb(
-                    clamp((int) Math.round(sumR / weightSum), 0, 255),
-                    clamp((int) Math.round(sumG / weightSum), 0, 255),
-                    clamp((int) Math.round(sumB / weightSum), 0, 255));
-        }
+        int[][] rows = new int[frames.size()][width];
+        int[] outputRow = new int[width];
         Bitmap fused = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
-        fused.setPixels(output, 0, width, 0, 0, width, height);
+        for (int y = 0; y < height; y++) {
+            if (Thread.currentThread().isInterrupted()) {
+                fused.recycle();
+                throw new InterruptedException("Fusión temporal cancelada");
+            }
+            for (int frame = 0; frame < frames.size(); frame++) {
+                frames.get(frame).bitmap.getPixels(
+                        rows[frame], 0, width, 0, y, width, 1);
+            }
+            int rowOffset = y * width;
+            for (int x = 0; x < width; x++) {
+                int base = rows[0][x];
+                int baseR = android.graphics.Color.red(base);
+                int baseG = android.graphics.Color.green(base);
+                int baseB = android.graphics.Color.blue(base);
+                double sumR = baseR, sumG = baseG, sumB = baseB, weightSum = 1.0;
+                for (int frame = 1; frame < frames.size(); frame++) {
+                    if ((frames.get(frame).mask[rowOffset + x] & 0xff) == 0) continue;
+                    int color = rows[frame][x];
+                    int r = android.graphics.Color.red(color);
+                    int g = android.graphics.Color.green(color);
+                    int b = android.graphics.Color.blue(color);
+                    double difference = Math.abs(r - baseR) * .30
+                            + Math.abs(g - baseG) * .59 + Math.abs(b - baseB) * .11;
+                    if (difference > 34.0) continue;
+                    double weight =
+                            .72
+                                    * Math.exp(
+                                            -(difference * difference)
+                                                    / (2.0 * 18.0 * 18.0));
+                    sumR += r * weight;
+                    sumG += g * weight;
+                    sumB += b * weight;
+                    weightSum += weight;
+                }
+                outputRow[x] = android.graphics.Color.rgb(
+                        clamp((int) Math.round(sumR / weightSum), 0, 255),
+                        clamp((int) Math.round(sumG / weightSum), 0, 255),
+                        clamp((int) Math.round(sumB / weightSum), 0, 255));
+            }
+            fused.setPixels(outputRow, 0, width, 0, y, width, 1);
+        }
         return fused;
     }
 

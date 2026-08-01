@@ -1,5 +1,6 @@
 package com.mejorarfotos.app;
 
+import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 
@@ -10,8 +11,15 @@ import android.graphics.Color;
 public final class ImageEnhancer {
     private ImageEnhancer() {}
 
-    public static Bitmap enhance(Bitmap input, int scaleFactor, int profile, int noise, int detail, int sharpen) {
-        int maxInput = scaleFactor >= 4 ? 900 : 1400;
+    public static Bitmap enhance(
+            Context context,
+            Bitmap input,
+            int scaleFactor,
+            int profile,
+            int noise,
+            int detail,
+            int sharpen) {
+        int maxInput = ProcessingMemory.fallbackInputMaxSide(context, scaleFactor);
         Bitmap working = fit(input, maxInput);
         Bitmap scaled = Bitmap.createScaledBitmap(working, Math.max(1, working.getWidth() * scaleFactor),
                 Math.max(1, working.getHeight() * scaleFactor), true);
@@ -38,8 +46,10 @@ public final class ImageEnhancer {
 
     private static Bitmap restore(Bitmap source, int profile, float noise, float detail, float sharpen) {
         int width = source.getWidth(), height = source.getHeight();
-        int[] src = new int[width * height], out = new int[width * height];
+        int[] src = new int[width * height];
         source.getPixels(src, 0, width, 0, 0, width, height);
+        Bitmap result = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        int[] outRow = new int[width];
         // Profiles behave like practical restoration presets: portraits are protected
         // from hard halos, while text gets stronger edges and local contrast.
         if (profile == 1) { noise = Math.max(noise, .32f); sharpen *= .74f; detail *= .84f; }
@@ -59,11 +69,12 @@ public final class ImageEnhancer {
                 int r = restoreChannel(Color.red(center), averageR, noise, detail, sharpen, contrast);
                 int g = restoreChannel(Color.green(center), averageG, noise, detail, sharpen, contrast);
                 int b = restoreChannel(Color.blue(center), averageB, noise, detail, sharpen, contrast);
-                out[y * width + x] = Color.argb(Color.alpha(center), r, g, b);
+                outRow[x] = Color.argb(Color.alpha(center), r, g, b);
             }
+            result.setPixels(outRow, 0, width, 0, y, width, 1);
         }
-        Bitmap result = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
-        result.setPixels(out, 0, width, 0, 0, width, height); source.recycle(); return result;
+        source.recycle();
+        return result;
     }
 
     private static int restoreChannel(int original, int average, float noise, float detail, float sharpen, float contrast) {

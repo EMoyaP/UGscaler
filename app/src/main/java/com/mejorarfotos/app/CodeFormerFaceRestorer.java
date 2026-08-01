@@ -128,6 +128,12 @@ public final class CodeFormerFaceRestorer {
             recycleDetection(detection, input);
             return new Result(input, 0);
         }
+        if (!ProcessingMemory.canRunCodeFormer(context, input)) {
+            recycleDetection(detection, input);
+            throw new Exception(
+                    "CodeFormer omitido: "
+                            + ProcessingMemory.codeFormerUnavailableReason(context, input));
+        }
 
         File model;
         try {
@@ -136,36 +142,54 @@ public final class CodeFormerFaceRestorer {
             recycleDetection(detection, input);
             throw error;
         }
-        Bitmap output = input.copy(Bitmap.Config.ARGB_8888, true);
         OrtEnvironment environment = OrtEnvironment.getEnvironment();
-        OrtSession.SessionOptions options = new OrtSession.SessionOptions();
-        options.setIntraOpNumThreads(2);
-        options.setInterOpNumThreads(1);
-        options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
+        Bitmap output = null;
         int restored = 0;
-        try (OrtSession session = environment.createSession(model.getAbsolutePath(), options)) {
-            detection.faces.sort(Comparator.comparingInt(
-                    face -> -face.getBoundingBox().width() * face.getBoundingBox().height()));
-            for (Face face : detection.faces) {
-                if (restored >= 3) break;
-                Matrix sourceToFace = alignment(face, detection.scale);
-                if (sourceToFace == null) continue;
-                Bitmap aligned = Bitmap.createBitmap(
-                        FACE_SIZE, FACE_SIZE, Bitmap.Config.ARGB_8888);
-                Canvas alignedCanvas = new Canvas(aligned);
-                Paint filter = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
-                alignedCanvas.drawBitmap(input, sourceToFace, filter);
-                Bitmap restoredFace = run(session, environment, aligned);
-                aligned.recycle();
-                paste(output, restoredFace, sourceToFace);
-                restoredFace.recycle();
-                restored++;
+        try (OrtSession.SessionOptions options = new OrtSession.SessionOptions()) {
+            options.setIntraOpNumThreads(1);
+            options.setInterOpNumThreads(1);
+            options.setExecutionMode(OrtSession.SessionOptions.ExecutionMode.SEQUENTIAL);
+            options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.BASIC_OPT);
+            options.setMemoryPatternOptimization(false);
+            options.setCPUArenaAllocator(false);
+            try (OrtSession session =
+                         environment.createSession(model.getAbsolutePath(), options)) {
+                output = input.copy(Bitmap.Config.ARGB_8888, true);
+                if (output == null) throw new Exception("No hay memoria para restaurar el rostro");
+                detection.faces.sort(Comparator.comparingInt(
+                        face -> -face.getBoundingBox().width()
+                                * face.getBoundingBox().height()));
+                for (Face face : detection.faces) {
+                    if (restored >= 2 || Thread.currentThread().isInterrupted()) break;
+                    Matrix sourceToFace = alignment(face, detection.scale);
+                    if (sourceToFace == null) continue;
+                    Bitmap aligned = Bitmap.createBitmap(
+                            FACE_SIZE, FACE_SIZE, Bitmap.Config.ARGB_8888);
+                    Bitmap restoredFace = null;
+                    try {
+                        Canvas alignedCanvas = new Canvas(aligned);
+                        Paint filter =
+                                new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+                        alignedCanvas.drawBitmap(input, sourceToFace, filter);
+                        restoredFace = run(session, environment, aligned);
+                        paste(output, restoredFace, sourceToFace);
+                        restored++;
+                    } finally {
+                        aligned.recycle();
+                        if (restoredFace != null && !restoredFace.isRecycled()) {
+                            restoredFace.recycle();
+                        }
+                    }
+                }
             }
+        } catch (Exception | OutOfMemoryError error) {
+            if (output != null && !output.isRecycled()) output.recycle();
+            throw error;
         } finally {
             recycleDetection(detection, input);
         }
         if (restored == 0) {
-            output.recycle();
+            if (output != null && !output.isRecycled()) output.recycle();
             return new Result(input, 0);
         }
         return new Result(output, restored);

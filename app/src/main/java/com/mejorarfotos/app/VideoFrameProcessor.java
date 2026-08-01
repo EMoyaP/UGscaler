@@ -188,6 +188,24 @@ public final class VideoFrameProcessor {
      * that otherwise wins over a blurred person or object.
      */
     private static double sharpness(Bitmap bitmap) {
+        int longest = Math.max(bitmap.getWidth(), bitmap.getHeight());
+        Bitmap scoring = bitmap;
+        if (longest > 720) {
+            float ratio = 720f / longest;
+            scoring = Bitmap.createScaledBitmap(
+                    bitmap,
+                    Math.max(1, Math.round(bitmap.getWidth() * ratio)),
+                    Math.max(1, Math.round(bitmap.getHeight() * ratio)),
+                    true);
+        }
+        try {
+            return sharpnessPixels(scoring);
+        } finally {
+            if (scoring != bitmap && !scoring.isRecycled()) scoring.recycle();
+        }
+    }
+
+    private static double sharpnessPixels(Bitmap bitmap) {
         int width = bitmap.getWidth();
         int height = bitmap.getHeight();
         if (width < 12 || height < 12) return 0;

@@ -4,7 +4,7 @@ Aplicación Android para recuperar detalle de fotografías y obtener un
 fotograma estático de mayor calidad a partir de un video. Todo el procesado de
 las imágenes se realiza en el dispositivo.
 
-## Novedades de la versión 1.4.0
+## Novedades de la versión 1.4.2
 
 - Fusión temporal real de cinco fotogramas.
 - Alineación ORB + homografía RANSAC para compensar el movimiento de cámara.
@@ -14,6 +14,19 @@ las imágenes se realiza en el dispositivo.
 - Detección y alineación facial local mediante el modelo integrado de ML Kit.
 - Verificación SHA-256 del modelo CodeFormer descargado.
 - Aviso visible de que la restauración facial es generativa y puede reconstruir rasgos.
+- Límites adaptativos según la memoria real del teléfono para fotos, fotogramas,
+  Real-ESRGAN y el motor de respaldo.
+- Fusión temporal por filas para evitar conservar cinco matrices completas de
+  píxeles durante la reconstrucción.
+- Cancelación segura del procesamiento y liberación explícita de bitmaps,
+  recursos OpenCV y procesos NCNN.
+- CodeFormer pasa a ser opcional y solo se ejecuta cuando el dispositivo
+  dispone de memoria suficiente.
+- Interfaz móvil reorganizada en tarjetas adaptables, con controles táctiles
+  mayores y el visor dimensionado según el ancho disponible.
+- Recorte explícito de la imagen original antes de ejecutar la mejora.
+- Exportación PNG sin pérdida a `Imágenes/UGscaler`, con acciones inmediatas
+  para abrir o compartir el resultado.
 
 ## Cómo funciona
 
@@ -40,14 +53,15 @@ conexión. Consulta [MODEL_MANIFEST.md](MODEL_MANIFEST.md).
 - Cámara, galería, corrección EXIF y selector temporal.
 - Presets Auto, Retrato, Paisaje y Texto.
 - Controles de ruido, detalle, enfoque y escala 2×/4×.
-- Recorte, comparación antes/después y exportación a `Imágenes/UGscaler`.
+- Recorte explícito, comparación antes/después y exportación PNG sin pérdida
+  a `Imágenes/UGscaler`.
 - Botones Nuevo y Atrás para editar otro archivo sin cerrar la aplicación.
 - Backend ARM64 con Vulkan cuando el dispositivo lo permite y respaldo local.
 
 ## Descargar
 
-La versión actual es `1.4.0`. La APK se encuentra en la raíz como
-[`UGscaler-v1.4.0.apk`](UGscaler-v1.4.0.apk). El nombre no incluye el sufijo
+La versión actual es `1.4.2`. La APK se encuentra en la raíz como
+[`UGscaler-v1.4.2.apk`](UGscaler-v1.4.2.apk). El nombre no incluye el sufijo
 `debug`, aunque se trata de una compilación de pruebas firmada con la clave de
 depuración de Android.
 
@@ -60,7 +74,7 @@ Requisitos: JDK 17, Android SDK 35 y un dispositivo ARM64.
 ```
 
 La salida se genera como
-`app/build/outputs/apk/debug/UGscaler-v1.4.0.apk`.
+`app/build/outputs/apk/debug/UGscaler-v1.4.2.apk`.
 
 La conversión reproducible del checkpoint oficial se documenta en
 `tools/export_codeformer_onnx.py`; `tools/validate_codeformer_onnx.py` ejecuta

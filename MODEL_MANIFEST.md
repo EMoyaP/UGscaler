@@ -1,6 +1,7 @@
 # Manifiesto del modelo opcional
 
-UGscaler 1.4.0 descarga CodeFormer solo cuando detecta un rostro y la opción
+UGscaler 1.4.2 descarga CodeFormer desde el recurso de modelo publicado con
+la versión 1.4.0 solo cuando detecta un rostro y la opción
 `Rostro IA` está activa. Las fotos y los videos nunca se envían: la descarga
 contiene únicamente el modelo y la inferencia posterior se ejecuta con ONNX
 Runtime dentro del teléfono.

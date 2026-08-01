@@ -19,6 +19,9 @@ public class CropImageView extends View {
     private final Paint overlay = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint line = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF selection = new RectF();
+    private final RectF imageRect = new RectF();
+    private final RectF beforeRect = new RectF();
+    private final RectF selectionRect = new RectF();
     private float scale, offsetX, offsetY;
     private float downX, downY;
     private int action = 0; // 1 move, 2 left/top, 3 right/bottom
@@ -56,6 +59,13 @@ public class CropImageView extends View {
     public void toggleComparison() { comparing = !comparing; invalidate(); }
     public boolean isComparing() { return comparing && comparisonBitmap != null; }
 
+    public void beginCrop() {
+        comparisonBitmap = null;
+        comparing = false;
+        selection.set(.08f, .08f, .92f, .92f);
+        invalidate();
+    }
+
     @Override protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
         if (bitmap == null) {
@@ -68,7 +78,11 @@ public class CropImageView extends View {
         scale = Math.min(getWidth() / (float) bitmap.getWidth(), getHeight() / (float) bitmap.getHeight());
         offsetX = (getWidth() - bitmap.getWidth() * scale) / 2f;
         offsetY = (getHeight() - bitmap.getHeight() * scale) / 2f;
-        RectF imageRect = new RectF(offsetX, offsetY, offsetX + bitmap.getWidth() * scale, offsetY + bitmap.getHeight() * scale);
+        imageRect.set(
+                offsetX,
+                offsetY,
+                offsetX + bitmap.getWidth() * scale,
+                offsetY + bitmap.getHeight() * scale);
         if (isComparing()) {
             canvas.drawBitmap(bitmap, null, imageRect, paint);
             canvas.save();
@@ -76,7 +90,11 @@ public class CropImageView extends View {
             float beforeScale = Math.min(getWidth() / (float) comparisonBitmap.getWidth(), getHeight() / (float) comparisonBitmap.getHeight());
             float beforeX = (getWidth() - comparisonBitmap.getWidth() * beforeScale) / 2f;
             float beforeY = (getHeight() - comparisonBitmap.getHeight() * beforeScale) / 2f;
-            RectF beforeRect = new RectF(beforeX, beforeY, beforeX + comparisonBitmap.getWidth() * beforeScale, beforeY + comparisonBitmap.getHeight() * beforeScale);
+            beforeRect.set(
+                    beforeX,
+                    beforeY,
+                    beforeX + comparisonBitmap.getWidth() * beforeScale,
+                    beforeY + comparisonBitmap.getHeight() * beforeScale);
             canvas.drawBitmap(comparisonBitmap, null, beforeRect, paint);
             canvas.restore();
             paint.setColor(Color.rgb(214, 243, 106)); paint.setStrokeWidth(dp(2));
@@ -105,10 +123,12 @@ public class CropImageView extends View {
     }
 
     private RectF selectionPixels() {
-        return new RectF(offsetX + selection.left * bitmap.getWidth() * scale,
+        selectionRect.set(
+                offsetX + selection.left * bitmap.getWidth() * scale,
                 offsetY + selection.top * bitmap.getHeight() * scale,
                 offsetX + selection.right * bitmap.getWidth() * scale,
                 offsetY + selection.bottom * bitmap.getHeight() * scale);
+        return selectionRect;
     }
 
     @Override public boolean onTouchEvent(MotionEvent event) {
@@ -147,6 +167,15 @@ public class CropImageView extends View {
             }
             downX = event.getX(); downY = event.getY(); invalidate();
         }
+        if (event.getAction() == MotionEvent.ACTION_UP) {
+            performClick();
+            action = 0;
+        }
+        return true;
+    }
+
+    @Override public boolean performClick() {
+        super.performClick();
         return true;
     }
 
@@ -156,7 +185,17 @@ public class CropImageView extends View {
         int top = Math.max(0, Math.round(selection.top * bitmap.getHeight()));
         int right = Math.min(bitmap.getWidth(), Math.round(selection.right * bitmap.getWidth()));
         int bottom = Math.min(bitmap.getHeight(), Math.round(selection.bottom * bitmap.getHeight()));
-        return Bitmap.createBitmap(bitmap, left, top, Math.max(1, right - left), Math.max(1, bottom - top));
+        Bitmap cropped = Bitmap.createBitmap(
+                bitmap, left, top, Math.max(1, right - left), Math.max(1, bottom - top));
+        // Bitmap.createBitmap may return the source object when the full image is
+        // selected. Processing must own an independent bitmap so Cancel/Nuevo can
+        // safely release the editor state without invalidating a worker thread.
+        if (cropped == bitmap) {
+            Bitmap copy = bitmap.copy(Bitmap.Config.ARGB_8888, false);
+            if (copy == null) throw new OutOfMemoryError("No hay memoria para crear el recorte");
+            return copy;
+        }
+        return cropped;
     }
 
     public void showFullImage() { selection.set(0, 0, 1, 1); invalidate(); }

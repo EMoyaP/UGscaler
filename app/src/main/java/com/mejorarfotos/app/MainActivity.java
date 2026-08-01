@@ -160,7 +160,7 @@ public class MainActivity extends Activity {
         content.addView(progressCard, spacedWrap(8));
 
         engineDescription = text(
-                "RT-Focuser elimina desenfoque y Real-ESRGAN recupera resolución. "
+                "BSRGAN reconstruye detalle y recupera resolución de forma local. "
                         + "La escala se adapta automáticamente a la foto y al teléfono.",
                 11,
                 muted);
@@ -392,7 +392,6 @@ public class MainActivity extends Activity {
     private void runEnhancement(int operation, RectF selection, Bitmap pipelineOriginal) {
         ContextCrop contextCrop = null;
         Bitmap sourceCrop = null;
-        Bitmap deblurredContext = null;
         Bitmap restoredCrop = null;
         Bitmap enhanced = null;
         try {
@@ -401,47 +400,38 @@ public class MainActivity extends Activity {
             if (sourceCrop == contextCrop.bitmap) sourceCrop = copyOf(contextCrop.bitmap);
             float focusScore = ImageQualityGuard.focusScore(sourceCrop);
             boolean needsDeblur = ImageQualityGuard.shouldDeblur(focusScore);
-            if (needsDeblur) {
-                setProgress(operation, 4, "RT-Focuser · corrigiendo desenfoque detectado…");
-                int deblurMax = ProcessingMemory.deblurInputMaxSide(this);
-                deblurredContext = RtFocuserDeblurrer.restore(
-                        this,
-                        contextCrop.bitmap,
-                        deblurMax,
-                        value -> setProgress(operation, 4 + value * 43 / 100,
-                                "RT-Focuser · eliminando desenfoque…"));
-                restoredCrop = contextCrop.extract(deblurredContext);
-                if (restoredCrop != deblurredContext) {
-                    recycle(deblurredContext);
-                    deblurredContext = null;
-                }
-            } else {
-                restoredCrop = copyOf(sourceCrop);
-                setProgress(operation, 47,
-                        "Detalle original protegido · evitando sobreenfoque…");
-            }
+            restoredCrop = copyOf(sourceCrop);
+            setProgress(operation, 47, needsDeblur
+                    ? "Desenfoque intenso detectado · activando protección…"
+                    : "Foto analizada · preparando reconstrucción local…");
             int scale = ProcessingMemory.recommendedUpscale(this, restoredCrop);
             setProgress(operation, 50,
-                    "Real-ESRGAN · reescalando automáticamente ×" + scale + "…");
+                    "BSRGAN · reescalando automáticamente ×" + scale + "…");
             startEstimatedUpscaleProgress(operation);
             try {
                 enhanced = NativeRealEsrgan.enhance(this, restoredCrop, scale);
             } catch (InterruptedException cancelled) {
                 throw cancelled;
             } catch (Exception | OutOfMemoryError nativeError) {
-                Log.w(TAG, "Real-ESRGAN no disponible; usando restauración segura", nativeError);
+                Log.w(TAG, "BSRGAN no disponible; usando restauración segura", nativeError);
                 System.gc();
                 enhanced = ImageEnhancer.enhance(this, restoredCrop, scale, 0, 0, 0, 0);
             }
             enhanced = ImageQualityGuard.ensureMinimumDimensions(enhanced, sourceCrop);
-            setProgress(operation, 92, "Protegiendo color, luces y detalle original…");
+            setProgress(operation, 90, "Validando la reconstrucción frente al original…");
+            float artifactRisk = ImageQualityGuard.artifactRisk(enhanced, sourceCrop);
+            boolean conservative = needsDeblur || artifactRisk > .01f;
+            setProgress(operation, 92, conservative
+                    ? "Limitando artefactos en zonas no recuperables…"
+                    : "Aplicando el detalle reconstruido por IA…");
             enhanced = ImageQualityGuard.protectInPlace(
                     enhanced,
                     sourceCrop,
-                    needsDeblur ? .72f : .62f,
-                    needsDeblur ? 22 : 18);
+                    conservative ? .35f : .90f,
+                    conservative ? 20 : 56);
             Log.i(TAG, "Protección de calidad aplicada; focusScore=" + focusScore
-                    + ", deblur=" + needsDeblur);
+                    + ", desenfoque=" + needsDeblur + ", artifactRisk=" + artifactRisk
+                    + ", conservador=" + conservative);
             setProgress(operation, 95, "Guardando PNG en el carrete…");
             Uri saved = savePng(enhanced);
             Bitmap delivered = enhanced;
@@ -465,7 +455,6 @@ public class MainActivity extends Activity {
             } else {
                 recycle(pipelineOriginal);
             }
-            recycle(deblurredContext);
             recycle(sourceCrop);
             recycle(restoredCrop);
             recycle(enhanced);
@@ -686,7 +675,7 @@ public class MainActivity extends Activity {
         handler.postDelayed(new Runnable() {
             @Override public void run() {
                 if (!isCurrent(operation) || !processing || progressValue >= 92) return;
-                setProgressNow(progressValue + 1, "Real-ESRGAN · reconstruyendo detalle…");
+                setProgressNow(progressValue + 1, "BSRGAN · reconstruyendo detalle…");
                 handler.postDelayed(this, 650);
             }
         }, 650);

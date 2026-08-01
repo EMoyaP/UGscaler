@@ -6,7 +6,7 @@ import android.graphics.Color;
 
 /**
  * Local photo-restoration pipeline. It is intentionally independent from the UI so a
- * Real-ESRGAN/NCNN model can be plugged in without changing the editor workflow.
+ * BSRGAN/NCNN model can be plugged in without changing the editor workflow.
  */
 public final class ImageEnhancer {
     private ImageEnhancer() {}

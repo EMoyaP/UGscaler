@@ -19,24 +19,22 @@ public class ImageQualityGuardTest {
     }
 
     @Test
-    public void neuralColourCastIsStronglyLimited() {
+    public void neuralReconstructionIsActuallyTransferred() {
         int baseline = argb(255, 160, 150, 140);
         int neural = argb(255, 245, 105, 65);
-        int protectedPixel = ImageQualityGuard.applyNeuralDetail(
-                baseline, neural, neural, neural, neural, neural, .62f, 18);
-        int originalRedBias = red(baseline) - blue(baseline);
-        int protectedRedBias = red(protectedPixel) - blue(protectedPixel);
-        assertEquals(originalRedBias, protectedRedBias);
+        int protectedPixel = ImageQualityGuard.blendNeuralCandidate(
+                baseline, neural, .90f, 56);
+        assertEquals(210, red(protectedPixel));
+        assertEquals(110, green(protectedPixel));
+        assertEquals(90, blue(protectedPixel));
     }
 
     @Test
     public void protectionDoesNotCreateNewClipping() {
         int baseline = argb(255, 245, 244, 243);
         int neural = argb(255, 255, 255, 255);
-        int darkNeighbour = argb(255, 80, 80, 80);
-        int protectedPixel = ImageQualityGuard.applyNeuralDetail(
-                baseline, neural, darkNeighbour, darkNeighbour,
-                darkNeighbour, darkNeighbour, .72f, 22);
+        int protectedPixel = ImageQualityGuard.blendNeuralCandidate(
+                baseline, neural, .90f, 56);
         assertTrue(red(protectedPixel) <= 254);
         assertTrue(green(protectedPixel) <= 254);
         assertTrue(blue(protectedPixel) <= 254);
@@ -45,8 +43,8 @@ public class ImageQualityGuardTest {
     @Test
     public void identicalPixelsRemainIdentical() {
         int pixel = argb(255, 43, 127, 211);
-        assertEquals(pixel, ImageQualityGuard.applyNeuralDetail(
-                pixel, pixel, pixel, pixel, pixel, pixel, .62f, 18));
+        assertEquals(pixel, ImageQualityGuard.blendNeuralCandidate(
+                pixel, pixel, .90f, 56));
     }
 
     private static int argb(int a, int r, int g, int b) {

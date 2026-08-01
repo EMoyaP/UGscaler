@@ -1,15 +1,18 @@
-Real-ESRGAN / NCNN Android runtime
+BSRGAN / NCNN Android runtime
 
 The bundled executable, NCNN runtime libraries and converted model assets are
 distributed from the RealSR-NCNN-Android project:
 https://github.com/tumuyan/RealSR-NCNN-Android
 
-The upstream project acknowledges Real-ESRGAN and Tencent NCNN:
-https://github.com/xinntao/Real-ESRGAN
+UGscaler uses the BSRGAN x4 weights converted from the official project:
+https://github.com/cszn/BSRGAN
+
+The runtime provider acknowledges Tencent NCNN:
 https://github.com/Tencent/ncnn
 
 This app uses the ARM64 release assets and keeps the original project as the
-runtime provider.
+runtime provider. The converted model remains subject to the BSRGAN Apache
+License 2.0 included alongside the application assets.
 
 MIT notice for RealSR-NCNN-Android and realsr-ncnn-vulkan:
 

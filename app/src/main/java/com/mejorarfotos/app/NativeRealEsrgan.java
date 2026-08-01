@@ -12,10 +12,10 @@ import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Runs the bundled ARM64 Real-ESRGAN NCNN backend without a network connection. */
+/** Runs the bundled ARM64 BSRGAN model through NCNN without a network connection. */
 public final class NativeRealEsrgan {
     private static final String ASSET_ROOT = "realesrgan";
-    private static final String MODEL = "models-Real-ESRGAN";
+    private static final String MODEL = "models-ESRGAN-BSRGAN";
     private static final String EXECUTABLE = "librealsr_ncnn_exec.so";
     private static final String NCNN_LIBRARY = "libncnn.so";
     private static final Object LOCK = new Object();
@@ -35,7 +35,7 @@ public final class NativeRealEsrgan {
             Bitmap input,
             int outputScale) throws Exception {
         if (!isSupportedDevice()) {
-            throw new UnsupportedOperationException("Real-ESRGAN requiere ARM64");
+            throw new UnsupportedOperationException("BSRGAN requiere ARM64");
         }
         if (Thread.currentThread().isInterrupted()) {
             throw new InterruptedException("Procesado cancelado");
@@ -44,7 +44,7 @@ public final class NativeRealEsrgan {
         File root = prepare(context);
         File inputFile = File.createTempFile("realesrgan-in-", ".png", context.getCacheDir());
         File outputFile = File.createTempFile("realesrgan-out-", ".png", context.getCacheDir());
-        // Do not sharpen before inference. Real-ESRGAN already reconstructs edges;
+        // Do not sharpen before inference. BSRGAN already reconstructs edges;
         // a second RGB sharpening pass creates halos and clipped colours.
         Bitmap prepared = input.copy(Bitmap.Config.ARGB_8888, false);
         Bitmap working = ProcessingMemory.fit(
@@ -71,7 +71,7 @@ public final class NativeRealEsrgan {
                 exit = run(root, executable, model, inputFile, outputFile, true);
             }
             if (exit != 0 || !outputFile.exists()) {
-                throw new Exception("Real-ESRGAN no pudo procesar la imagen");
+                throw new Exception("BSRGAN no pudo procesar la imagen");
             }
             if (Thread.currentThread().isInterrupted()) {
                 throw new InterruptedException("Procesado cancelado");
@@ -84,7 +84,7 @@ public final class NativeRealEsrgan {
             // result to avoid holding both the x4 and x2 bitmaps in memory.
             decode.inSampleSize = outputScale == 2 ? 2 : 1;
             Bitmap result = BitmapFactory.decodeFile(outputFile.getAbsolutePath(), decode);
-            if (result == null) throw new Exception("Salida Real-ESRGAN inválida");
+            if (result == null) throw new Exception("Salida BSRGAN inválida");
             return result;
         } finally {
             if (working != prepared && !working.isRecycled()) working.recycle();
@@ -140,19 +140,20 @@ public final class NativeRealEsrgan {
         File root = new File(context.getFilesDir(), ASSET_ROOT);
         synchronized (LOCK) {
             removeLegacyExecutables(root);
+            removeLegacyModels(context, root);
             File executable = installedNativeFile(context, EXECUTABLE);
             File ncnn = installedNativeFile(context, NCNN_LIBRARY);
             File model = new File(root, MODEL + "/x4.bin");
             if (!executable.isFile() || executable.length() < 7_000_000L
                     || !ncnn.isFile() || ncnn.length() < 10_000_000L) {
-                throw new Exception("El motor Real-ESRGAN no est\u00e1 instalado correctamente");
+                throw new Exception("El motor BSRGAN no est\u00e1 instalado correctamente");
             }
             if (model.exists() && model.length() > 30_000_000L) {
                 return root;
             }
             copyTree(context, ASSET_ROOT, root);
             if (!model.exists() || model.length() < 30_000_000L) {
-                throw new Exception("No se pudo instalar el modelo Real-ESRGAN");
+                throw new Exception("No se pudo instalar el modelo BSRGAN");
             }
             return root;
         }
@@ -172,6 +173,22 @@ public final class NativeRealEsrgan {
         for (File file : obsolete) {
             if (file.isFile()) file.delete();
         }
+    }
+
+    private static void removeLegacyModels(Context context, File root) {
+        // Remove only the exact assets installed by versions <= 1.6.5. They are
+        // no longer used and otherwise consume about 57 MB after an update.
+        File oldModelDirectory = new File(root, "models-Real-ESRGAN");
+        File[] obsolete = {
+                new File(oldModelDirectory, "x4.bin"),
+                new File(oldModelDirectory, "x4.param"),
+                new File(context.getFilesDir(), "rt_focuser_wint8_afp32.onnx"),
+                new File(context.getFilesDir(), "rt_focuser_wint8_afp32.onnx.partial")
+        };
+        for (File file : obsolete) {
+            if (file.isFile()) file.delete();
+        }
+        if (oldModelDirectory.isDirectory()) oldModelDirectory.delete();
     }
 
     private static void copyTree(Context context, String assetPath, File destination)

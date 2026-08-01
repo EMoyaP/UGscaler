@@ -3,8 +3,8 @@ package com.mejorarfotos.app;
 import android.graphics.Bitmap;
 
 /**
- * Decides when deblurring is useful and limits neural output to plausible detail.
- * The guard transfers mostly luminance detail, preserving the colour of the source.
+ * Measures source/candidate quality and limits neural output to plausible detail.
+ * The original remains the geometric and colour reference for every result.
  */
 public final class ImageQualityGuard {
     private static final int ANALYSIS_MAX_SIDE = 512;
@@ -42,9 +42,52 @@ public final class ImageQualityGuard {
         return focusScore < DEBLUR_THRESHOLD;
     }
 
+    /**
+     * Fraction of sampled pixels where the neural candidate strongly diverges from
+     * a bicubic reconstruction of the source. It is intentionally resolution
+     * independent and bounded to roughly 256 x 256 samples.
+     */
+    public static float artifactRisk(Bitmap candidate, Bitmap reference) {
+        if (candidate == null || reference == null || candidate.isRecycled() || reference.isRecycled()) {
+            throw new IllegalArgumentException("Imagen no disponible");
+        }
+        int width = candidate.getWidth();
+        int height = candidate.getHeight();
+        int refWidth = reference.getWidth();
+        int refHeight = reference.getHeight();
+        int stepX = Math.max(1, width / 256);
+        int stepY = Math.max(1, height / 256);
+        long risky = 0;
+        long samples = 0;
+        for (int y = 0; y < height; y += stepY) {
+            float sy = height <= 1 ? 0f : y * (refHeight - 1f) / (height - 1f);
+            int y0 = Math.max(0, Math.min(refHeight - 1, (int) sy));
+            int y1 = Math.min(refHeight - 1, y0 + 1);
+            float yf = sy - y0;
+            for (int x = 0; x < width; x += stepX) {
+                float sx = width <= 1 ? 0f : x * (refWidth - 1f) / (width - 1f);
+                int x0 = Math.max(0, Math.min(refWidth - 1, (int) sx));
+                int x1 = Math.min(refWidth - 1, x0 + 1);
+                float xf = sx - x0;
+                int top = interpolate(reference.getPixel(x0, y0), reference.getPixel(x1, y0), xf);
+                int bottom = interpolate(reference.getPixel(x0, y1), reference.getPixel(x1, y1), xf);
+                int baseline = interpolate(top, bottom, yf);
+                int neural = candidate.getPixel(x, y);
+                int maximumDelta = Math.max(
+                        Math.abs(((baseline >>> 16) & 0xff) - ((neural >>> 16) & 0xff)),
+                        Math.max(
+                                Math.abs(((baseline >>> 8) & 0xff) - ((neural >>> 8) & 0xff)),
+                                Math.abs((baseline & 0xff) - (neural & 0xff))));
+                if (maximumDelta > 28) risky++;
+                samples++;
+            }
+        }
+        return samples == 0 ? 1f : risky / (float) samples;
+    }
+
     /** Protects the candidate in place while keeping memory bounded. */
     public static Bitmap protectInPlace(Bitmap candidate, Bitmap reference,
-                                        float neuralStrength, int maxLumaDelta) {
+                                        float neuralStrength, int maxChannelDelta) {
         if (candidate == null || reference == null || candidate.isRecycled() || reference.isRecycled()) {
             throw new IllegalArgumentException("Imagen no disponible");
         }
@@ -60,9 +103,7 @@ public final class ImageQualityGuard {
         int width = candidate.getWidth();
         int height = candidate.getHeight();
         int[] outputRow = new int[width];
-        int[] neuralTop = new int[width];
         int[] neuralCenter = new int[width];
-        int[] neuralBottom = new int[width];
         int[] referenceRow0 = new int[refWidth];
         int[] referenceRow1 = new int[refWidth];
         int[] x0 = new int[width];
@@ -75,15 +116,8 @@ public final class ImageQualityGuard {
             xf[x] = sx - x0[x];
         }
 
-        candidate.getPixels(neuralCenter, 0, width, 0, 0, width, 1);
-        System.arraycopy(neuralCenter, 0, neuralTop, 0, width);
-        if (height > 1) {
-            candidate.getPixels(neuralBottom, 0, width, 0, 1, width, 1);
-        } else {
-            System.arraycopy(neuralCenter, 0, neuralBottom, 0, width);
-        }
-
         for (int y = 0; y < height; y++) {
+            candidate.getPixels(neuralCenter, 0, width, 0, y, width, 1);
             float sy = height <= 1 ? 0f : y * (refHeight - 1f) / (height - 1f);
             int y0 = Math.max(0, Math.min(refHeight - 1, (int) sy));
             int y1 = Math.min(refHeight - 1, y0 + 1);
@@ -98,29 +132,10 @@ public final class ImageQualityGuard {
                 int top = interpolate(referenceRow0[x0[x]], referenceRow0[x1[x]], xf[x]);
                 int bottom = interpolate(referenceRow1[x0[x]], referenceRow1[x1[x]], xf[x]);
                 int baseline = interpolate(top, bottom, yf);
-                outputRow[x] = applyNeuralDetail(
-                        baseline,
-                        neuralCenter[x],
-                        neuralCenter[Math.max(0, x - 1)],
-                        neuralCenter[Math.min(width - 1, x + 1)],
-                        neuralTop[x],
-                        neuralBottom[x],
-                        neuralStrength,
-                        maxLumaDelta);
+                outputRow[x] = blendNeuralCandidate(
+                        baseline, neuralCenter[x], neuralStrength, maxChannelDelta);
             }
             candidate.setPixels(outputRow, 0, width, 0, y, width, 1);
-            if (y + 1 < height) {
-                int[] oldTop = neuralTop;
-                neuralTop = neuralCenter;
-                neuralCenter = neuralBottom;
-                neuralBottom = oldTop;
-                int next = Math.min(height - 1, y + 2);
-                if (next == y + 1) {
-                    System.arraycopy(neuralCenter, 0, neuralBottom, 0, width);
-                } else {
-                    candidate.getPixels(neuralBottom, 0, width, 0, next, width, 1);
-                }
-            }
         }
         return candidate;
     }
@@ -158,25 +173,23 @@ public final class ImageQualityGuard {
         return samples == 0 ? 0f : absoluteLaplacian / (float) samples;
     }
 
-    static int applyNeuralDetail(int baseline, int center, int left, int right,
-                                 int top, int bottom, float strength, int maxLumaDelta) {
+    static int blendNeuralCandidate(int baseline, int neural,
+                                    float strength, int maxChannelDelta) {
         int br = (baseline >>> 16) & 0xff;
         int bg = (baseline >>> 8) & 0xff;
         int bb = baseline & 0xff;
-        int centerY = pixelLuminance(center);
-        int averageY = (pixelLuminance(left) + pixelLuminance(right)
-                + pixelLuminance(top) + pixelLuminance(bottom)) / 4;
-        int neuralDetail = clamp(centerY - averageY, -maxLumaDelta, maxLumaDelta);
-        int appliedLuma = Math.round(neuralDetail * clamp01(strength));
-        int r = protectedChannel(br, appliedLuma);
-        int g = protectedChannel(bg, appliedLuma);
-        int b = protectedChannel(bb, appliedLuma);
+        int nr = (neural >>> 16) & 0xff;
+        int ng = (neural >>> 8) & 0xff;
+        int nb = neural & 0xff;
+        float amount = clamp01(strength);
+        int r = protectedChannel(br, Math.round(clamp(nr - br,
+                -maxChannelDelta, maxChannelDelta) * amount));
+        int g = protectedChannel(bg, Math.round(clamp(ng - bg,
+                -maxChannelDelta, maxChannelDelta) * amount));
+        int b = protectedChannel(bb, Math.round(clamp(nb - bb,
+                -maxChannelDelta, maxChannelDelta) * amount));
         int alpha = (baseline >>> 24) & 0xff;
         return (alpha << 24) | (r << 16) | (g << 8) | b;
-    }
-
-    private static int pixelLuminance(int color) {
-        return luminance((color >>> 16) & 0xff, (color >>> 8) & 0xff, color & 0xff);
     }
 
     private static int protectedChannel(int baseline, int delta) {

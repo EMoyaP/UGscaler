@@ -33,11 +33,7 @@ public final class NativeRealEsrgan {
     public static Bitmap enhance(
             Context context,
             Bitmap input,
-            int outputScale,
-            int profile,
-            int noise,
-            int detail,
-            int sharpen) throws Exception {
+            int outputScale) throws Exception {
         if (!isSupportedDevice()) {
             throw new UnsupportedOperationException("Real-ESRGAN requiere ARM64");
         }
@@ -48,7 +44,9 @@ public final class NativeRealEsrgan {
         File root = prepare(context);
         File inputFile = File.createTempFile("realesrgan-in-", ".png", context.getCacheDir());
         File outputFile = File.createTempFile("realesrgan-out-", ".png", context.getCacheDir());
-        Bitmap prepared = ImageEnhancer.prepareForAi(input, profile, noise, detail, sharpen);
+        // Do not sharpen before inference. Real-ESRGAN already reconstructs edges;
+        // a second RGB sharpening pass creates halos and clipped colours.
+        Bitmap prepared = input.copy(Bitmap.Config.ARGB_8888, false);
         Bitmap working = ProcessingMemory.fit(
                 prepared, ProcessingMemory.realEsrganInputMaxSide(context, outputScale));
         try {
@@ -81,6 +79,7 @@ public final class NativeRealEsrgan {
 
             BitmapFactory.Options decode = new BitmapFactory.Options();
             decode.inPreferredConfig = Bitmap.Config.ARGB_8888;
+            decode.inMutable = true;
             // NCNN always emits x4. Decode directly at half size for a requested x2
             // result to avoid holding both the x4 and x2 bitmaps in memory.
             decode.inSampleSize = outputScale == 2 ? 2 : 1;

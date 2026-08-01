@@ -24,16 +24,14 @@ public final class ImageEnhancer {
         Bitmap scaled = Bitmap.createScaledBitmap(working, Math.max(1, working.getWidth() * scaleFactor),
                 Math.max(1, working.getHeight() * scaleFactor), true);
         if (working != input) working.recycle();
-        return restore(scaled, profile, noise / 100f, detail / 100f, sharpen / 100f);
+        // Conservative fallback: preserve source colour and detail. A fabricated
+        // per-channel sharpen is worse than a faithful high-quality resize.
+        return scaled;
     }
 
     /** Mild deblur pre-pass used before the neural model. It does not replace a true motion-deblur model. */
     public static Bitmap prepareForAi(Bitmap input, int profile, int noise, int detail, int sharpen) {
-        Bitmap copy = input.copy(Bitmap.Config.ARGB_8888, false);
-        float safeNoise = Math.min(0.55f, noise / 100f * .75f);
-        float safeDetail = Math.min(0.62f, detail / 100f * .72f);
-        float safeSharpen = Math.min(0.68f, sharpen / 100f * .78f);
-        return restore(copy, profile, safeNoise, safeDetail, safeSharpen);
+        return input.copy(Bitmap.Config.ARGB_8888, false);
     }
 
     private static Bitmap fit(Bitmap source, int longestSide) {

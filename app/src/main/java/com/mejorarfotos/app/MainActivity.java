@@ -658,37 +658,57 @@ public class MainActivity extends Activity {
 
     private void runEnhancement(int operation, RectF selection, Bitmap pipelineOriginal) {
         ContextCrop contextCrop = null;
+        Bitmap sourceCrop = null;
         Bitmap deblurredContext = null;
         Bitmap restoredCrop = null;
         Bitmap enhanced = null;
         try {
             contextCrop = createContextCrop(pipelineOriginal, selection);
-            setProgress(operation, 4, "RT-Focuser · reconstruyendo enfoque…");
-            int deblurMax = ProcessingMemory.deblurInputMaxSide(this);
-            deblurredContext = RtFocuserDeblurrer.restore(
-                    this,
-                    contextCrop.bitmap,
-                    deblurMax,
-                    value -> setProgress(operation, 4 + value * 43 / 100,
-                            "RT-Focuser · eliminando desenfoque…"));
-            restoredCrop = contextCrop.extract(deblurredContext);
-            if (restoredCrop != deblurredContext) {
-                recycle(deblurredContext);
-                deblurredContext = null;
+            sourceCrop = contextCrop.extract(contextCrop.bitmap);
+            if (sourceCrop == contextCrop.bitmap) sourceCrop = copyOf(contextCrop.bitmap);
+            float focusScore = ImageQualityGuard.focusScore(sourceCrop);
+            boolean needsDeblur = ImageQualityGuard.shouldDeblur(focusScore);
+            if (needsDeblur) {
+                setProgress(operation, 4, "RT-Focuser · corrigiendo desenfoque detectado…");
+                int deblurMax = ProcessingMemory.deblurInputMaxSide(this);
+                deblurredContext = RtFocuserDeblurrer.restore(
+                        this,
+                        contextCrop.bitmap,
+                        deblurMax,
+                        value -> setProgress(operation, 4 + value * 43 / 100,
+                                "RT-Focuser · eliminando desenfoque…"));
+                restoredCrop = contextCrop.extract(deblurredContext);
+                if (restoredCrop != deblurredContext) {
+                    recycle(deblurredContext);
+                    deblurredContext = null;
+                }
+            } else {
+                restoredCrop = copyOf(sourceCrop);
+                setProgress(operation, 47,
+                        "Detalle original protegido · evitando sobreenfoque…");
             }
             int scale = ProcessingMemory.recommendedUpscale(this, restoredCrop);
             setProgress(operation, 50,
                     "Real-ESRGAN · reescalando automáticamente ×" + scale + "…");
             startEstimatedUpscaleProgress(operation);
             try {
-                enhanced = NativeRealEsrgan.enhance(this, restoredCrop, scale, 0, 18, 62, 52);
+                enhanced = NativeRealEsrgan.enhance(this, restoredCrop, scale);
             } catch (InterruptedException cancelled) {
                 throw cancelled;
             } catch (Exception | OutOfMemoryError nativeError) {
                 Log.w(TAG, "Real-ESRGAN no disponible; usando restauración segura", nativeError);
                 System.gc();
-                enhanced = ImageEnhancer.enhance(this, restoredCrop, scale, 0, 18, 62, 52);
+                enhanced = ImageEnhancer.enhance(this, restoredCrop, scale, 0, 0, 0, 0);
             }
+            setProgress(operation, 92, "Protegiendo color, luces y detalle original…");
+            enhanced = ImageQualityGuard.protectInPlace(
+                    enhanced,
+                    sourceCrop,
+                    scale,
+                    needsDeblur ? .68f : .50f,
+                    needsDeblur ? 36 : 24);
+            Log.i(TAG, "Protección de calidad aplicada; focusScore=" + focusScore
+                    + ", deblur=" + needsDeblur);
             setProgress(operation, 95, "Guardando PNG en el carrete…");
             Uri saved = savePng(enhanced);
             Bitmap delivered = enhanced;
@@ -713,6 +733,7 @@ public class MainActivity extends Activity {
                 recycle(pipelineOriginal);
             }
             recycle(deblurredContext);
+            recycle(sourceCrop);
             recycle(restoredCrop);
             recycle(enhanced);
         }
@@ -721,22 +742,31 @@ public class MainActivity extends Activity {
     private void runGenerativeEnhancement(
             int operation, RectF selection, Bitmap pipelineOriginal) {
         ContextCrop contextCrop = null;
+        Bitmap sourceCrop = null;
         Bitmap deblurredContext = null;
         Bitmap preparedCrop = null;
         Bitmap generated = null;
         try {
             contextCrop = createContextCrop(pipelineOriginal, selection);
-            setProgress(operation, 4, "RT-Focuser · preparando bordes y estructura…");
-            deblurredContext = RtFocuserDeblurrer.restore(
-                    this,
-                    contextCrop.bitmap,
-                    Math.min(1280, ProcessingMemory.deblurInputMaxSide(this)),
-                    value -> setProgress(operation, 4 + value * 31 / 100,
-                            "RT-Focuser · preparando la referencia…"));
-            preparedCrop = contextCrop.extract(deblurredContext);
-            if (preparedCrop != deblurredContext) {
-                recycle(deblurredContext);
-                deblurredContext = null;
+            sourceCrop = contextCrop.extract(contextCrop.bitmap);
+            if (sourceCrop == contextCrop.bitmap) sourceCrop = copyOf(contextCrop.bitmap);
+            float focusScore = ImageQualityGuard.focusScore(sourceCrop);
+            if (ImageQualityGuard.shouldDeblur(focusScore)) {
+                setProgress(operation, 4, "RT-Focuser · preparando bordes y estructura…");
+                deblurredContext = RtFocuserDeblurrer.restore(
+                        this,
+                        contextCrop.bitmap,
+                        Math.min(1280, ProcessingMemory.deblurInputMaxSide(this)),
+                        value -> setProgress(operation, 4 + value * 31 / 100,
+                                "RT-Focuser · preparando la referencia…"));
+                preparedCrop = contextCrop.extract(deblurredContext);
+                if (preparedCrop != deblurredContext) {
+                    recycle(deblurredContext);
+                    deblurredContext = null;
+                }
+            } else {
+                preparedCrop = copyOf(sourceCrop);
+                setProgress(operation, 35, "Detalle original protegido · preparando Gemini…");
             }
             setProgress(operation, 38, "Enviando referencias cifradas por HTTPS a Gemini…");
             startEstimatedGenerativeProgress(operation);
@@ -766,6 +796,7 @@ public class MainActivity extends Activity {
                 recycle(pipelineOriginal);
             }
             recycle(deblurredContext);
+            recycle(sourceCrop);
             recycle(preparedCrop);
             recycle(generated);
         }

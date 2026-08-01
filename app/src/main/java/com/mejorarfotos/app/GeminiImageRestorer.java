@@ -160,6 +160,11 @@ public final class GeminiImageRestorer {
         if (lower.contains("429") || lower.contains("quota")) {
             return new Exception("Se alcanzó la cuota de Gemini; inténtalo más tarde", error);
         }
+        if (lower.contains("app check") || lower.contains("appcheck")
+                || lower.contains("attestation") || lower.contains("integrity token")) {
+            return new Exception(
+                    "No se pudo verificar la integridad de UGscaler con Google Play", error);
+        }
         if (lower.contains("billing") || lower.contains("blaze") || lower.contains("403")) {
             return new Exception("La restauración generativa aún no tiene facturación habilitada", error);
         }

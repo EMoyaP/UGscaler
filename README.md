@@ -2,7 +2,7 @@
 
 Aplicación Android para restaurar, recortar y reescalar fotografías con dos flujos de trabajo: IA completamente local y restauración generativa opcional mediante Gemini.
 
-## UGscaler 1.6.2
+## UGscaler 1.6.3
 
 La interfaz está diseñada para pantallas de smartphone y uso con una mano:
 
@@ -16,10 +16,13 @@ La interfaz está diseñada para pantallas de smartphone y uso con una mano:
 
 ## IA local y privada
 
-- **RT-Focuser** corrige desenfoque de movimiento mediante ventanas solapadas de 256 × 256 px para mantener acotado el uso de memoria.
-- **Real-ESRGAN/NCNN** reconstruye detalle y aplica un escalado automático ×2 o ×4.
+- Un análisis de enfoque decide si la foto necesita **RT-Focuser**; las imágenes ya nítidas evitan esa pasada para no perder microdetalle.
+- Cuando existe desenfoque real, **RT-Focuser** lo corrige mediante ventanas solapadas de 256 × 256 px para mantener acotado el uso de memoria.
+- **Real-ESRGAN/NCNN** recibe la fuente sin preenfoque, reconstruye detalle y aplica un escalado automático ×2 o ×4.
+- Una protección final transfiere principalmente detalle de luminancia, limita cambios de color y evita recortar nuevas luces o sombras. El original actúa como referencia de calidad también después de un recorte.
 - En Android 10–16, el ejecutable NCNN se instala como componente nativo de solo lectura; no se ejecuta código desde la carpeta escribible de la app. Esto corrige el cierre de HyperOS al comenzar Real-ESRGAN.
 - Las clases JNI de ONNX Runtime quedan excluidas de la ofuscación R8, evitando el aborto nativo `GetMethodID` al obtener la salida de RT-Focuser en Android 16.
+- Firebase App Check usa Play Integrity con la huella SHA-256 del APK para validar las solicitudes de IA generativa, también en instalaciones distribuidas fuera de Google Play.
 - Si existe un recorte, UGscaler conserva contexto de la foto original durante el deblurring y extrae después la región solicitada.
 - La escala máxima se decide a partir de la entrada, el límite del modelo y la memoria disponible.
 - No requiere conexión: la fotografía no abandona el dispositivo.
@@ -57,7 +60,7 @@ $env:ANDROID_HOME='C:\Users\uge\Android\Sdk'
 .\gradlew.bat clean lintRelease testDebugUnitTest assembleRelease
 ```
 
-La salida se genera en `app/build/outputs/apk/release/UGscaler-v1.6.2.apk` y la versión distribuible se copia a la raíz como `UGscaler-v1.6.2.apk`, sin `debug` en el nombre.
+La salida se genera en `app/build/outputs/apk/release/UGscaler-v1.6.3.apk` y la versión distribuible se copia a la raíz como `UGscaler-v1.6.3.apk`, sin `debug` en el nombre.
 
 ## Límites reales
 

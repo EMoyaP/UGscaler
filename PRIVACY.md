@@ -22,6 +22,8 @@ El usuario puede cerrar sesión desde la pestaña generativa. También puede bor
 
 La configuración cliente de Firebase incluida en la app identifica el proyecto, pero no es una contraseña ni concede por sí sola acceso a Gemini: Firebase AI Logic exige una sesión autenticada.
 
+Antes de una solicitud generativa, Firebase App Check solicita a Google Play Integrity una certificación temporal de la app y del dispositivo para reducir usos no autorizados. Esta comprobación transmite señales técnicas de integridad a Google, no la fotografía. La distribución directa de UGscaler no exige que la instalación proceda de Google Play ni verifica una licencia de compra.
+
 ## Archivos resultantes
 
 Los resultados se guardan automáticamente como PNG en la colección de imágenes del dispositivo. UGscaler nunca sobrescribe el archivo original.

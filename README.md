@@ -2,7 +2,7 @@
 
 Aplicación Android para restaurar, recortar y reescalar fotografías con dos flujos de trabajo: IA completamente local y restauración generativa opcional mediante Gemini.
 
-## UGscaler 1.6.1
+## UGscaler 1.6.2
 
 La interfaz está diseñada para pantallas de smartphone y uso con una mano:
 
@@ -19,6 +19,7 @@ La interfaz está diseñada para pantallas de smartphone y uso con una mano:
 - **RT-Focuser** corrige desenfoque de movimiento mediante ventanas solapadas de 256 × 256 px para mantener acotado el uso de memoria.
 - **Real-ESRGAN/NCNN** reconstruye detalle y aplica un escalado automático ×2 o ×4.
 - En Android 10–16, el ejecutable NCNN se instala como componente nativo de solo lectura; no se ejecuta código desde la carpeta escribible de la app. Esto corrige el cierre de HyperOS al comenzar Real-ESRGAN.
+- Las clases JNI de ONNX Runtime quedan excluidas de la ofuscación R8, evitando el aborto nativo `GetMethodID` al obtener la salida de RT-Focuser en Android 16.
 - Si existe un recorte, UGscaler conserva contexto de la foto original durante el deblurring y extrae después la región solicitada.
 - La escala máxima se decide a partir de la entrada, el límite del modelo y la memoria disponible.
 - No requiere conexión: la fotografía no abandona el dispositivo.
@@ -56,7 +57,7 @@ $env:ANDROID_HOME='C:\Users\uge\Android\Sdk'
 .\gradlew.bat clean lintRelease testDebugUnitTest assembleRelease
 ```
 
-La salida se genera en `app/build/outputs/apk/release/UGscaler-v1.6.1.apk` y la versión distribuible se copia a la raíz como `UGscaler-v1.6.1.apk`, sin `debug` en el nombre.
+La salida se genera en `app/build/outputs/apk/release/UGscaler-v1.6.2.apk` y la versión distribuible se copia a la raíz como `UGscaler-v1.6.2.apk`, sin `debug` en el nombre.
 
 ## Límites reales
 

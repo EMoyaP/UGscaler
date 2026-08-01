@@ -1,6 +1,6 @@
 # Avisos y atribuciones de terceros
 
-UGscaler 1.6.1 incorpora o utiliza:
+UGscaler 1.6.2 incorpora o utiliza:
 
 - [RT-Focuser](https://github.com/ReaganWu/RT-Focuser), modelo de eliminación de desenfoque, licencia MIT. El texto íntegro se incluye en `app/src/main/assets/licenses/RTFOCUSER-LICENSE.txt`.
 - [RealSR-NCNN-Android](https://github.com/tumuyan/RealSR-NCNN-Android), backend Android bajo licencia MIT.

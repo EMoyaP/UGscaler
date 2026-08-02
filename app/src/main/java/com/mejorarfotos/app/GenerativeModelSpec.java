@@ -2,6 +2,8 @@ package com.mejorarfotos.app;
 
 import org.json.JSONObject;
 
+import java.util.Locale;
+
 final class GenerativeModelSpec {
     final String version;
     final String name;
@@ -13,7 +15,7 @@ final class GenerativeModelSpec {
         version = required(value, "version");
         name = required(value, "name");
         url = required(value, "url");
-        sha256 = required(value, "sha256").toLowerCase();
+        sha256 = required(value, "sha256").toLowerCase(Locale.ROOT);
         bytes = value.getLong("bytes");
         if (!sha256.matches("[0-9a-f]{64}") || bytes < 500_000_000L) {
             throw new IllegalArgumentException("Catálogo generativo inválido");

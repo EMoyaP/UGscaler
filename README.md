@@ -2,7 +2,7 @@
 
 Aplicación Android para restaurar, recortar y reescalar fotografías mediante IA completamente local, sin cuentas, cuotas, suscripciones ni costes por imagen.
 
-## UGscaler 1.6.7
+## UGscaler 1.6.8
 
 La interfaz está diseñada para pantallas de smartphone y uso con una mano:
 
@@ -16,6 +16,15 @@ Si la reconstrucción no supera el detalle medible del original o presenta riesg
 En el resultado, un toque en **Comparar** alterna de forma persistente entre **ORIGINAL** y **MEJORADA**. También puedes mantenerlo pulsado para consultar momentáneamente el original; una etiqueta dentro de la fotografía confirma qué versión estás viendo.
 
 **Nuevo proyecto** libera la imagen actual y permite comenzar otra edición sin reiniciar la aplicación.
+
+## Procesamiento en segundo plano
+
+- Las mejoras, generaciones y descargas iniciadas por el usuario continúan al cambiar de aplicación o apagar la pantalla.
+- Una notificación persistente muestra el tipo de tarea, el estado y el porcentaje aproximado.
+- Si UGscaler no está visible al finalizar, Android muestra una notificación de resultado; al tocarla se abre la aplicación.
+- Durante una tarea activa se mantiene despierta únicamente la CPU necesaria. La pantalla puede permanecer apagada.
+- Forzar la detención desde Android cancela el proceso, de acuerdo con el comportamiento de seguridad del sistema.
+- En Android 13 o posterior se solicita permiso para mostrar las notificaciones. Si se rechaza, la tarea puede continuar, pero el sistema puede ocultar el aviso final.
 
 ## IA local y privada
 
@@ -55,7 +64,7 @@ Consulta [PRIVACY.md](PRIVACY.md) para conocer el tratamiento local de las imág
 - APK optimizada para ARM64, incluido Redmi Note 13 Pro+ (`23090RA98G`).
 - Runtime nativo actualizado y empaquetado alineado para dispositivos Android con páginas de memoria de 16 KB.
 - Límites de decodificación y salida adaptados al heap disponible.
-- Procesamiento cancelable y liberación explícita de bitmaps y tareas nativas.
+- Procesamiento cancelable, ejecución en segundo plano y liberación explícita de bitmaps y tareas nativas.
 - El original nunca se sobrescribe.
 
 ## Compilar y verificar
@@ -68,7 +77,7 @@ $env:ANDROID_SDK_ROOT='C:\Android'
 .\gradlew.bat clean lintRelease testDebugUnitTest assembleRelease
 ```
 
-La salida se genera en `app/build/outputs/apk/release/UGscaler-v1.6.7.apk` y la versión distribuible se copia a la raíz como `UGscaler-v1.6.7.apk`, sin `debug` en el nombre.
+La salida se genera en `app/build/outputs/apk/release/UGscaler-v1.6.8.apk` y la versión distribuible se copia a la raíz como `UGscaler-v1.6.8.apk`, sin `debug` en el nombre.
 
 ## Límites reales
 

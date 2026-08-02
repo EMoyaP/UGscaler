@@ -1,5 +1,6 @@
 package com.mejorarfotos.app;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
@@ -23,10 +24,12 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /** Local text-to-image and image-to-image workspace. */
+@SuppressLint({"SetTextI18n", "ViewConstructor"})
 final class GenerativeView extends LinearLayout {
     interface Host {
         Bitmap sourceForGenerative();
         void showDownloads();
+        void requestBackgroundNotificationPermission();
         void deliverGenerativeResult(Bitmap result, Bitmap before);
     }
 
@@ -149,6 +152,10 @@ final class GenerativeView extends LinearLayout {
     }
 
     void close() {
+        if (busy) {
+            BackgroundTaskService.cancel(
+                    getContext(), BackgroundTaskService.JOB_GENERATE);
+        }
         worker.shutdownNow();
     }
 
@@ -187,6 +194,13 @@ final class GenerativeView extends LinearLayout {
             return;
         }
         hideKeyboard();
+        host.requestBackgroundNotificationPermission();
+        BackgroundTaskService.begin(
+                getContext(),
+                BackgroundTaskService.JOB_GENERATE,
+                improve ? "Mejorando con IA generativa" : "Generando imagen",
+                "Cargando el modelo local…",
+                false);
         busy = true;
         setControlsEnabled(false);
         progress.setVisibility(VISIBLE);
@@ -204,12 +218,22 @@ final class GenerativeView extends LinearLayout {
                             int percent = 10 + Math.round(step * 85f / Math.max(1, total));
                             progress.setProgress(percent, true);
                             status.setText("Generando · paso " + step + " de " + total);
+                            BackgroundTaskService.update(
+                                    getContext(),
+                                    BackgroundTaskService.JOB_GENERATE,
+                                    percent,
+                                    "Generando · paso " + step + " de " + total);
                         }));
                 main.post(() -> {
                     busy = false;
                     setControlsEnabled(true);
                     progress.setVisibility(GONE);
                     status.setText("Imagen generada · preparando PNG");
+                    BackgroundTaskService.update(
+                            getContext(),
+                            BackgroundTaskService.JOB_GENERATE,
+                            96,
+                            "Preparando el PNG…");
                     host.deliverGenerativeResult(result, before);
                 });
             } catch (Throwable error) {
@@ -219,6 +243,14 @@ final class GenerativeView extends LinearLayout {
                     setControlsEnabled(true);
                     progress.setVisibility(GONE);
                     status.setText("No se pudo completar la generación");
+                    BackgroundTaskService.finish(
+                            getContext(),
+                            BackgroundTaskService.JOB_GENERATE,
+                            "Generación incompleta",
+                            error.getMessage() == null
+                                    ? "No se pudo completar la generación local."
+                                    : error.getMessage(),
+                            false);
                     Toast.makeText(getContext(), error.getMessage() == null
                                     ? "Error del motor generativo" : error.getMessage(),
                             Toast.LENGTH_LONG).show();

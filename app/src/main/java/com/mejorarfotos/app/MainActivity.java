@@ -57,6 +57,7 @@ public class MainActivity extends Activity implements GenerativeView.Host {
     private static final String TAG = "UGscaler";
     private static final int PICK_IMAGE = 10;
     private static final int STORAGE_PERMISSION = 11;
+    private static final int NOTIFICATION_PERMISSION = 12;
 
     private final int background = Color.rgb(10, 14, 13);
     private final int panel = Color.rgb(24, 31, 28);
@@ -106,12 +107,33 @@ public class MainActivity extends Activity implements GenerativeView.Host {
     private boolean generativePageVisible;
     private boolean generatedFromPrompt;
     private int progressValue;
+    private String activeBackgroundJob;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         getWindow().setStatusBarColor(background);
         getWindow().setNavigationBarColor(background);
         buildUi();
+    }
+
+    @Override protected void onStart() {
+        super.onStart();
+        BackgroundTaskService.setAppVisible(true);
+    }
+
+    @Override protected void onStop() {
+        BackgroundTaskService.setAppVisible(false);
+        super.onStop();
+    }
+
+    @Override public void requestBackgroundNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(
+                    new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                    NOTIFICATION_PERMISSION);
+        }
     }
 
     private void buildUi() {
@@ -294,7 +316,7 @@ public class MainActivity extends Activity implements GenerativeView.Host {
         TextView title = text("Mejora una foto en dos pasos", 20, ink);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         TextView subtitle = text(
-                "Recorta si lo necesitas y deja que UGscaler seleccione la mejor escala.",
+                "Recorta si lo necesitas. Puedes salir de la app mientras UGscaler trabaja.",
                 12,
                 muted);
         subtitle.setPadding(0, dp(4), 0, 0);
@@ -475,6 +497,14 @@ public class MainActivity extends Activity implements GenerativeView.Host {
         recycle(beforeBitmap);
         beforeBitmap = compareSource;
         generatedFromPrompt = false;
+        requestBackgroundNotificationPermission();
+        activeBackgroundJob = BackgroundTaskService.JOB_ENHANCE;
+        BackgroundTaskService.begin(
+                this,
+                activeBackgroundJob,
+                "Mejorando fotografía",
+                "Analizando desenfoque y movimiento…",
+                false);
         beginProgress("Analizando desenfoque y movimiento…", 1);
         activeTask = executor.submit(() -> runEnhancement(operation, selection, pipelineOriginal));
     }
@@ -577,6 +607,13 @@ public class MainActivity extends Activity implements GenerativeView.Host {
         discardQualityWarning();
         pendingQualityBitmap = candidate;
         setProgressNow(96, "La mejora necesita tu revisión");
+        BackgroundTaskService.finish(
+                this,
+                BackgroundTaskService.JOB_ENHANCE,
+                "Revisión necesaria",
+                "La mejora ha terminado, pero UGscaler recomienda revisar el resultado.",
+                false);
+        activeBackgroundJob = null;
 
         Dialog dialog = new Dialog(this);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
@@ -634,6 +671,13 @@ public class MainActivity extends Activity implements GenerativeView.Host {
             endProgress("Resultado descartado");
             return;
         }
+        activeBackgroundJob = BackgroundTaskService.JOB_ENHANCE;
+        BackgroundTaskService.begin(
+                this,
+                activeBackgroundJob,
+                "Guardando fotografía",
+                "Preparando el PNG…",
+                false);
         setProgressNow(97, "Guardando PNG en el carrete…");
         activeTask = executor.submit(() -> {
             try {
@@ -676,6 +720,13 @@ public class MainActivity extends Activity implements GenerativeView.Host {
                 + " px · PNG sin pérdida · Imágenes/UGscaler");
         processing = false;
         activeTask = null;
+        BackgroundTaskService.finish(
+                this,
+                BackgroundTaskService.JOB_ENHANCE,
+                "Mejora finalizada",
+                "La fotografía mejorada se ha guardado como PNG en Imágenes/UGscaler.",
+                true);
+        activeBackgroundJob = null;
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         progressBar.setVisibility(View.GONE);
         percentText.setText("");
@@ -916,6 +967,10 @@ public class MainActivity extends Activity implements GenerativeView.Host {
         progressBar.setProgress(progressValue, true);
         percentText.setText(progressValue + "%");
         status.setText(message);
+        if (activeBackgroundJob != null) {
+            BackgroundTaskService.update(
+                    this, activeBackgroundJob, progressValue, message);
+        }
     }
 
     private void startEstimatedUpscaleProgress(int operation) {
@@ -942,6 +997,15 @@ public class MainActivity extends Activity implements GenerativeView.Host {
     private void fail(int operation, String message) {
         runOnUiThread(() -> {
             if (!isCurrent(operation)) return;
+            if (activeBackgroundJob != null) {
+                BackgroundTaskService.finish(
+                        this,
+                        activeBackgroundJob,
+                        "UGscaler no pudo finalizar",
+                        message,
+                        false);
+                activeBackgroundJob = null;
+            }
             endProgress(message);
             Toast.makeText(this, message, Toast.LENGTH_LONG).show();
         });
@@ -986,6 +1050,10 @@ public class MainActivity extends Activity implements GenerativeView.Host {
         activeTask = null;
         if (task != null) task.cancel(true);
         NativeRealEsrgan.cancelActive();
+        if (activeBackgroundJob != null) {
+            BackgroundTaskService.cancel(this, activeBackgroundJob);
+            activeBackgroundJob = null;
+        }
         processing = false;
         progressValue = 0;
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -1103,12 +1171,23 @@ public class MainActivity extends Activity implements GenerativeView.Host {
     @Override public void deliverGenerativeResult(Bitmap result, Bitmap before) {
         if (result == null || result.isRecycled()) {
             recycle(before);
+            BackgroundTaskService.finish(
+                    this,
+                    BackgroundTaskService.JOB_GENERATE,
+                    "Generación incompleta",
+                    "La IA local no devolvió una imagen válida.",
+                    false);
             toast("La IA local no devolvió una imagen válida");
             return;
         }
         final int operation = generation.incrementAndGet();
         processing = true;
         generatedFromPrompt = before == null;
+        BackgroundTaskService.update(
+                this,
+                BackgroundTaskService.JOB_GENERATE,
+                97,
+                "Guardando el PNG…");
         refreshActions();
         activeTask = executor.submit(() -> {
             Uri saved = null;
@@ -1134,6 +1213,14 @@ public class MainActivity extends Activity implements GenerativeView.Host {
                 savedResultUri = deliveredUri;
                 processing = false;
                 activeTask = null;
+                BackgroundTaskService.finish(
+                        this,
+                        BackgroundTaskService.JOB_GENERATE,
+                        deliveredError == null ? "Generación finalizada" : "Generación incompleta",
+                        deliveredError == null
+                                ? "La imagen se ha guardado como PNG en Imágenes/UGscaler."
+                                : "La imagen se generó, pero no pudo guardarse en el carrete.",
+                        deliveredError == null);
                 refreshActions();
                 if (deliveredError != null) {
                     toast("Imagen creada, pero no se pudo guardar en el carrete");
@@ -1153,6 +1240,10 @@ public class MainActivity extends Activity implements GenerativeView.Host {
             } else {
                 toast("Se necesita permiso para guardar el PNG automáticamente");
             }
+        } else if (requestCode == NOTIFICATION_PERMISSION
+                && (grantResults.length == 0
+                || grantResults[0] != PackageManager.PERMISSION_GRANTED)) {
+            toast("El trabajo continuará, pero Android puede ocultar el aviso de finalización");
         }
     }
 

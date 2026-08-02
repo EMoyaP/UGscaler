@@ -2,6 +2,8 @@ package com.mejorarfotos.app;
 
 import org.json.JSONObject;
 
+import java.util.Locale;
+
 /** Immutable entry in the signed-by-hash UGscaler model catalogue. */
 final class ModelSpec {
     final String id;
@@ -36,7 +38,7 @@ final class ModelSpec {
     }
 
     private static String hash(String value) {
-        String normalized = value.toLowerCase();
+        String normalized = value.toLowerCase(Locale.ROOT);
         if (!normalized.matches("[0-9a-f]{64}")) {
             throw new IllegalArgumentException("SHA-256 inválido");
         }

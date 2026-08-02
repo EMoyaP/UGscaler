@@ -15,7 +15,7 @@ Thumbs.db
 
 # Keep the distributable APK requested for this project
 *.apk
-!UGscaler-v1.6.7.apk
+!UGscaler-v1.6.8.apk
 
 # Personal profile/CV artifacts belong outside this Android repository
 CV_Eugenio_Moya_ATS.*

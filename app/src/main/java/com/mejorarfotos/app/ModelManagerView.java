@@ -1,5 +1,6 @@
 package com.mejorarfotos.app;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
@@ -16,6 +17,7 @@ import android.widget.Toast;
 import java.util.Locale;
 
 /** Mobile model-download screen with explicit install and update states. */
+@SuppressLint({"SetTextI18n", "ViewConstructor"})
 final class ModelManagerView extends LinearLayout implements ModelRepository.Listener {
     private static final int INK = Color.rgb(241, 246, 241);
     private static final int MUTED = Color.rgb(161, 176, 165);
@@ -109,6 +111,10 @@ final class ModelManagerView extends LinearLayout implements ModelRepository.Lis
     }
 
     void close() {
+        if (busy) {
+            BackgroundTaskService.cancel(
+                    getContext(), BackgroundTaskService.JOB_BSRGAN_DOWNLOAD);
+        }
         repository.close();
         generativeCard.close();
     }
@@ -127,6 +133,11 @@ final class ModelManagerView extends LinearLayout implements ModelRepository.Lis
         progress.setProgress(percent, true);
         action.setEnabled(false);
         action.setText("Descargando " + percent + " %");
+        BackgroundTaskService.update(
+                getContext(),
+                BackgroundTaskService.JOB_BSRGAN_DOWNLOAD,
+                percent,
+                "Descargando modelo de mejora · " + percent + " %");
     }
 
     @Override public void onInstalled(ModelSpec installed) {
@@ -136,6 +147,12 @@ final class ModelManagerView extends LinearLayout implements ModelRepository.Lis
         model = installed;
         refreshState();
         checkStatus.setText("Modelo verificado y listo para usar");
+        BackgroundTaskService.finish(
+                getContext(),
+                BackgroundTaskService.JOB_BSRGAN_DOWNLOAD,
+                "Modelo de mejora actualizado",
+                "El modelo local se ha descargado, verificado y está listo para usar.",
+                true);
         Toast.makeText(getContext(), "Modelo actualizado", Toast.LENGTH_SHORT).show();
     }
 
@@ -144,6 +161,12 @@ final class ModelManagerView extends LinearLayout implements ModelRepository.Lis
         progress.setVisibility(GONE);
         refreshState();
         checkStatus.setText(message);
+        BackgroundTaskService.finish(
+                getContext(),
+                BackgroundTaskService.JOB_BSRGAN_DOWNLOAD,
+                "Descarga incompleta",
+                message,
+                false);
     }
 
     private void install() {
@@ -153,6 +176,15 @@ final class ModelManagerView extends LinearLayout implements ModelRepository.Lis
         progress.setProgress(0);
         progress.setVisibility(VISIBLE);
         checkStatus.setText("La descarga se verificará antes de instalarse");
+        if (getContext() instanceof MainActivity) {
+            ((MainActivity) getContext()).requestBackgroundNotificationPermission();
+        }
+        BackgroundTaskService.begin(
+                getContext(),
+                BackgroundTaskService.JOB_BSRGAN_DOWNLOAD,
+                "Descargando modelo de mejora",
+                "Preparando la descarga segura…",
+                true);
         repository.install(model, this);
     }
 

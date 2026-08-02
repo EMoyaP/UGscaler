@@ -1,5 +1,6 @@
 package com.mejorarfotos.app;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
@@ -14,6 +15,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 /** Optional, resumable Stable Diffusion model card shown in Downloads. */
+@SuppressLint({"SetTextI18n", "ViewConstructor"})
 final class GenerativeModelCard extends LinearLayout
         implements GenerativeModelRepository.Listener {
     private static final int INK = Color.rgb(241, 246, 241);
@@ -76,9 +78,20 @@ final class GenerativeModelCard extends LinearLayout
         action.setOnClickListener(v -> {
             if (busy) {
                 repository.cancelDownload();
+                BackgroundTaskService.cancel(
+                        getContext(), BackgroundTaskService.JOB_DIFFUSION_DOWNLOAD);
             } else if (model != null) {
                 busy = true;
                 refreshState();
+                if (getContext() instanceof MainActivity) {
+                    ((MainActivity) getContext()).requestBackgroundNotificationPermission();
+                }
+                BackgroundTaskService.begin(
+                        getContext(),
+                        BackgroundTaskService.JOB_DIFFUSION_DOWNLOAD,
+                        "Descargando Stable Diffusion",
+                        "Preparando la descarga de 1,51 GB…",
+                        true);
                 repository.download(model, this);
             }
         });
@@ -106,6 +119,10 @@ final class GenerativeModelCard extends LinearLayout
     }
 
     void close() {
+        if (busy) {
+            BackgroundTaskService.cancel(
+                    getContext(), BackgroundTaskService.JOB_DIFFUSION_DOWNLOAD);
+        }
         repository.close();
     }
 
@@ -122,6 +139,11 @@ final class GenerativeModelCard extends LinearLayout
         status.setText(phase);
         action.setText("Cancelar · " + percent + " %");
         action.setEnabled(true);
+        BackgroundTaskService.update(
+                getContext(),
+                BackgroundTaskService.JOB_DIFFUSION_DOWNLOAD,
+                percent,
+                phase);
     }
 
     @Override public void onInstalled(GenerativeModelSpec value) {
@@ -130,6 +152,12 @@ final class GenerativeModelCard extends LinearLayout
         progress.setVisibility(GONE);
         status.setText("Modelo verificado y listo para usar");
         refreshState();
+        BackgroundTaskService.finish(
+                getContext(),
+                BackgroundTaskService.JOB_DIFFUSION_DOWNLOAD,
+                "Stable Diffusion está listo",
+                "El modelo generativo se ha descargado y verificado correctamente.",
+                true);
         Toast.makeText(getContext(), "Stable Diffusion está listo", Toast.LENGTH_LONG).show();
     }
 
@@ -138,6 +166,12 @@ final class GenerativeModelCard extends LinearLayout
         progress.setVisibility(GONE);
         status.setText(message);
         refreshState();
+        BackgroundTaskService.finish(
+                getContext(),
+                BackgroundTaskService.JOB_DIFFUSION_DOWNLOAD,
+                "Descarga incompleta",
+                message,
+                false);
     }
 
     @Override public void onCancelled() {
@@ -145,6 +179,8 @@ final class GenerativeModelCard extends LinearLayout
         progress.setVisibility(GONE);
         status.setText("Descarga pausada · continuará desde el mismo punto");
         refreshState();
+        BackgroundTaskService.cancel(
+                getContext(), BackgroundTaskService.JOB_DIFFUSION_DOWNLOAD);
     }
 
     private void refreshState() {

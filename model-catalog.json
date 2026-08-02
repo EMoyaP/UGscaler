@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "models": [
+    {
+      "id": "bsrgan-general",
+      "name": "Mejora general",
+      "description": "Restauración y ampliación local para fotografías, objetos y paisajes.",
+      "version": "1.0.0",
+      "bytes": 30920411,
+      "url": "https://github.com/EMoyaP/UGscaler/releases/download/models-v1.0.0/ugscaler-bsrgan-general-v1.0.0.zip",
+      "sha256": "abbbd448d9137ed4813338fc14e94ff64500a4f6a2be4dca2a6f7a0a047961ad",
+      "binSha256": "185866f36676a7478a66c54019977443193d13927bacc300980f946cabded72f",
+      "paramSha256": "ae7c53d7a187abe0dbf5a683637ae9c8b982040096b85d019b2096098def3a3d"
+    }
+  ]
+}

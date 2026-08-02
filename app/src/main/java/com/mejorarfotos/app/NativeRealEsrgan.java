@@ -2,38 +2,42 @@ package com.mejorarfotos.app;
 
 import android.content.Context;
 import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.os.Build;
 
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.util.ArrayList;
-import java.util.List;
 
-/** Runs the bundled ARM64 BSRGAN model through NCNN without a network connection. */
+/** Runs BSRGAN through a 16 KB-compatible NCNN JNI bridge. */
 public final class NativeRealEsrgan {
     private static final String ASSET_ROOT = "realesrgan";
     private static final String MODEL = "models-ESRGAN-BSRGAN";
-    private static final String EXECUTABLE = "librealsr_ncnn_exec.so";
-    private static final String NCNN_LIBRARY = "libncnn.so";
     private static final Object LOCK = new Object();
-    private static volatile Process activeProcess;
+    private static final boolean NATIVE_READY;
+
+    static {
+        boolean ready;
+        try {
+            System.loadLibrary("ugscaler_ncnn");
+            ready = true;
+        } catch (Throwable error) {
+            ready = false;
+        }
+        NATIVE_READY = ready;
+    }
 
     private NativeRealEsrgan() {}
 
     public static boolean isSupportedDevice() {
+        if (!NATIVE_READY) return false;
         for (String abi : Build.SUPPORTED_64_BIT_ABIS) {
             if ("arm64-v8a".equals(abi)) return true;
         }
         return false;
     }
 
-    public static Bitmap enhance(
-            Context context,
-            Bitmap input,
-            int outputScale) throws Exception {
+    public static Bitmap enhance(Context context, Bitmap input, int outputScale) throws Exception {
         if (!isSupportedDevice()) {
             throw new UnsupportedOperationException("BSRGAN requiere ARM64");
         }
@@ -42,98 +46,42 @@ public final class NativeRealEsrgan {
         }
 
         File root = prepare(context);
-        File inputFile = File.createTempFile("realesrgan-in-", ".png", context.getCacheDir());
-        File outputFile = File.createTempFile("realesrgan-out-", ".png", context.getCacheDir());
-        // Do not sharpen before inference. BSRGAN already reconstructs edges;
-        // a second RGB sharpening pass creates halos and clipped colours.
+        File downloaded = ModelRepository.activeModelDirectory(context);
+        File model = downloaded != null ? downloaded : new File(root, MODEL);
+        File param = new File(model, "x4.param");
+        File weights = new File(model, "x4.bin");
+        if (!param.isFile() || !weights.isFile()) {
+            throw new Exception("El modelo BSRGAN está incompleto");
+        }
+
         Bitmap prepared = input.copy(Bitmap.Config.ARGB_8888, false);
         Bitmap working = ProcessingMemory.fit(
                 prepared, ProcessingMemory.realEsrganInputMaxSide(context, outputScale));
         try {
-            try (OutputStream stream = new FileOutputStream(inputFile)) {
-                if (!working.compress(Bitmap.CompressFormat.PNG, 100, stream)) {
-                    throw new Exception("No se pudo preparar la imagen");
-                }
-            }
-            if (outputFile.exists() && !outputFile.delete()) {
-                throw new Exception("No se pudo preparar la salida temporal");
-            }
-
-            File executable = installedNativeFile(context, EXECUTABLE);
-            File model = new File(root, MODEL);
-            int exit = run(root, executable, model, inputFile, outputFile, false);
+            Bitmap result = nativeEnhance(
+                    working, param.getAbsolutePath(), weights.getAbsolutePath(),
+                    outputScale, 192, true);
             if (Thread.currentThread().isInterrupted()) {
+                recycle(result);
                 throw new InterruptedException("Procesado cancelado");
             }
-            if (exit != 0 || !outputFile.exists()) {
-                if (outputFile.exists()) outputFile.delete();
-                // CPU fallback is slower but works without a compatible Vulkan driver.
-                exit = run(root, executable, model, inputFile, outputFile, true);
+            if (result == null) {
+                // Some Android Vulkan drivers are incomplete. NCNN's CPU backend
+                // keeps the same model and quality as a deterministic fallback.
+                result = nativeEnhance(
+                        working, param.getAbsolutePath(), weights.getAbsolutePath(),
+                        outputScale, 128, false);
             }
-            if (exit != 0 || !outputFile.exists()) {
-                throw new Exception("BSRGAN no pudo procesar la imagen");
-            }
-            if (Thread.currentThread().isInterrupted()) {
-                throw new InterruptedException("Procesado cancelado");
-            }
-
-            BitmapFactory.Options decode = new BitmapFactory.Options();
-            decode.inPreferredConfig = Bitmap.Config.ARGB_8888;
-            decode.inMutable = true;
-            // NCNN always emits x4. Decode directly at half size for a requested x2
-            // result to avoid holding both the x4 and x2 bitmaps in memory.
-            decode.inSampleSize = outputScale == 2 ? 2 : 1;
-            Bitmap result = BitmapFactory.decodeFile(outputFile.getAbsolutePath(), decode);
-            if (result == null) throw new Exception("Salida BSRGAN inválida");
+            if (result == null) throw new Exception("BSRGAN no pudo procesar la imagen");
             return result;
         } finally {
-            if (working != prepared && !working.isRecycled()) working.recycle();
-            if (!prepared.isRecycled()) prepared.recycle();
-            inputFile.delete();
-            outputFile.delete();
+            if (working != prepared) recycle(working);
+            recycle(prepared);
         }
     }
 
     public static void cancelActive() {
-        Process process = activeProcess;
-        if (process != null) process.destroy();
-    }
-
-    private static int run(
-            File root,
-            File executable,
-            File model,
-            File input,
-            File output,
-            boolean cpu) throws Exception {
-        List<String> command = new ArrayList<>();
-        command.add(executable.getAbsolutePath());
-        command.add("-i"); command.add(input.getAbsolutePath());
-        command.add("-o"); command.add(output.getAbsolutePath());
-        command.add("-m"); command.add(model.getAbsolutePath());
-        command.add("-s"); command.add("4");
-        command.add("-t"); command.add("192");
-        command.add("-j"); command.add("1:1:1");
-        command.add("-g"); command.add(cpu ? "-1" : "0");
-
-        File log = new File(root, "last-run.log");
-        ProcessBuilder builder = new ProcessBuilder(command)
-                .directory(root)
-                .redirectErrorStream(true)
-                .redirectOutput(log);
-        // The executable depends on libncnn.so. Both files are installed together
-        // by PackageManager, outside the writable app home directory.
-        builder.environment().put("LD_LIBRARY_PATH", executable.getParent());
-        Process process = builder.start();
-        activeProcess = process;
-        try {
-            return process.waitFor();
-        } catch (InterruptedException interrupted) {
-            process.destroy();
-            throw interrupted;
-        } finally {
-            activeProcess = null;
-        }
+        if (NATIVE_READY) nativeCancel();
     }
 
     private static File prepare(Context context) throws Exception {
@@ -141,16 +89,11 @@ public final class NativeRealEsrgan {
         synchronized (LOCK) {
             removeLegacyExecutables(root);
             removeLegacyModels(context, root);
-            File executable = installedNativeFile(context, EXECUTABLE);
-            File ncnn = installedNativeFile(context, NCNN_LIBRARY);
+            if (!NATIVE_READY) {
+                throw new Exception("El motor BSRGAN no está instalado correctamente");
+            }
             File model = new File(root, MODEL + "/x4.bin");
-            if (!executable.isFile() || executable.length() < 7_000_000L
-                    || !ncnn.isFile() || ncnn.length() < 10_000_000L) {
-                throw new Exception("El motor BSRGAN no est\u00e1 instalado correctamente");
-            }
-            if (model.exists() && model.length() > 30_000_000L) {
-                return root;
-            }
+            if (model.exists() && model.length() > 30_000_000L) return root;
             copyTree(context, ASSET_ROOT, root);
             if (!model.exists() || model.length() < 30_000_000L) {
                 throw new Exception("No se pudo instalar el modelo BSRGAN");
@@ -159,25 +102,16 @@ public final class NativeRealEsrgan {
         }
     }
 
-    private static File installedNativeFile(Context context, String name) {
-        return new File(context.getApplicationInfo().nativeLibraryDir, name);
-    }
-
     private static void removeLegacyExecutables(File root) {
-        // Versions <= 1.6.0 copied these files to filesDir and attempted to execute
-        // them there. Remove only those exact obsolete files during migration.
         File[] obsolete = {
                 new File(root, "realsr-ncnn"),
-                new File(root, "libncnn.so")
+                new File(root, "libncnn.so"),
+                new File(root, "last-run.log")
         };
-        for (File file : obsolete) {
-            if (file.isFile()) file.delete();
-        }
+        for (File file : obsolete) if (file.isFile()) file.delete();
     }
 
     private static void removeLegacyModels(Context context, File root) {
-        // Remove only the exact assets installed by versions <= 1.6.5. They are
-        // no longer used and otherwise consume about 57 MB after an update.
         File oldModelDirectory = new File(root, "models-Real-ESRGAN");
         File[] obsolete = {
                 new File(oldModelDirectory, "x4.bin"),
@@ -185,9 +119,7 @@ public final class NativeRealEsrgan {
                 new File(context.getFilesDir(), "rt_focuser_wint8_afp32.onnx"),
                 new File(context.getFilesDir(), "rt_focuser_wint8_afp32.onnx.partial")
         };
-        for (File file : obsolete) {
-            if (file.isFile()) file.delete();
-        }
+        for (File file : obsolete) if (file.isFile()) file.delete();
         if (oldModelDirectory.isDirectory()) oldModelDirectory.delete();
     }
 
@@ -215,4 +147,13 @@ public final class NativeRealEsrgan {
             while ((read = input.read(buffer)) != -1) output.write(buffer, 0, read);
         }
     }
+
+    private static void recycle(Bitmap bitmap) {
+        if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
+    }
+
+    private static native Bitmap nativeEnhance(
+            Bitmap input, String paramPath, String binPath,
+            int outputScale, int tileSize, boolean useGpu);
+    private static native void nativeCancel();
 }

@@ -53,7 +53,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /** Mobile-first UGscaler photo workflow: upload, crop, automatic local AI and export. */
 @SuppressLint("SetTextI18n")
-public class MainActivity extends Activity {
+public class MainActivity extends Activity implements GenerativeView.Host {
     private static final String TAG = "UGscaler";
     private static final int PICK_IMAGE = 10;
     private static final int STORAGE_PERMISSION = 11;
@@ -76,13 +76,18 @@ public class MainActivity extends Activity {
     private Button cropButton;
     private Button enhanceButton;
     private Button newProjectButton;
+    private Button editorTab;
+    private Button generativeTab;
+    private Button modelsTab;
     private TextView status;
     private TextView dimensions;
     private TextView percentText;
     private TextView viewerBadge;
     private ProgressBar progressBar;
     private LinearLayout actionRow;
-    private TextView engineDescription;
+    private ModelManagerView modelManagerView;
+    private GenerativeView generativeView;
+    private FrameLayout pageHost;
 
     private Bitmap originalBitmap;
     private Bitmap acceptedCrop;
@@ -91,10 +96,15 @@ public class MainActivity extends Activity {
     private RectF acceptedSelection;
     private Uri savedResultUri;
     private Dialog resultDialog;
+    private Dialog qualityDialog;
+    private Bitmap pendingQualityBitmap;
     private Future<?> activeTask;
     private boolean processing;
     private boolean pendingEnhance;
     private volatile boolean destroyed;
+    private boolean modelsPageVisible;
+    private boolean generativePageVisible;
+    private boolean generatedFromPrompt;
     private int progressValue;
 
     @Override public void onCreate(Bundle state) {
@@ -111,6 +121,7 @@ public class MainActivity extends Activity {
         root.setPadding(dp(14), dp(8), dp(14), dp(10));
 
         root.addView(appBar(), fixed(54));
+        root.addView(tabBar(), fixed(44));
         scroll = new LockableScrollView(this);
         scroll.setFillViewport(true);
         scroll.setClipToPadding(false);
@@ -154,22 +165,37 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams progressParams = new LinearLayout.LayoutParams(-1, dp(7));
         progressParams.topMargin = dp(10);
         progressCard.addView(progressBar, progressParams);
-        dimensions = text("Procesado privado · sin conexión · salida PNG", 11, muted);
+        dimensions = text(
+                "El resultado se guardará automáticamente en Imágenes/UGscaler",
+                11,
+                muted);
         dimensions.setPadding(0, dp(7), 0, 0);
         progressCard.addView(dimensions);
         content.addView(progressCard, spacedWrap(8));
 
-        engineDescription = text(
-                "BSRGAN reconstruye detalle y recupera resolución de forma local. "
-                        + "La escala se adapta automáticamente a la foto y al teléfono.",
-                11,
-                muted);
-        engineDescription.setGravity(Gravity.CENTER);
-        engineDescription.setPadding(dp(10), dp(7), dp(10), dp(5));
-        content.addView(engineDescription, spacedWrap(0));
-
         scroll.addView(content, new ScrollViewLayoutParams(-1, -2));
-        root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+        android.widget.ScrollView modelScroll = new android.widget.ScrollView(this);
+        modelScroll.setFillViewport(true);
+        modelScroll.setVerticalScrollBarEnabled(false);
+        modelScroll.setTag("models-page");
+        modelManagerView = new ModelManagerView(this);
+        modelScroll.addView(modelManagerView, new android.widget.ScrollView.LayoutParams(-1, -2));
+        modelScroll.setVisibility(View.GONE);
+
+        android.widget.ScrollView generativeScroll = new android.widget.ScrollView(this);
+        generativeScroll.setFillViewport(true);
+        generativeScroll.setVerticalScrollBarEnabled(false);
+        generativeScroll.setTag("generative-page");
+        generativeView = new GenerativeView(this, this);
+        generativeScroll.addView(generativeView,
+                new android.widget.ScrollView.LayoutParams(-1, -2));
+        generativeScroll.setVisibility(View.GONE);
+
+        pageHost = new FrameLayout(this);
+        pageHost.addView(scroll, new FrameLayout.LayoutParams(-1, -1));
+        pageHost.addView(generativeScroll, new FrameLayout.LayoutParams(-1, -1));
+        pageHost.addView(modelScroll, new FrameLayout.LayoutParams(-1, -1));
+        root.addView(pageHost, new LinearLayout.LayoutParams(-1, 0, 1f));
         setContentView(root);
 
         ViewCompat.setOnApplyWindowInsetsListener(root, (view, insets) -> {
@@ -179,6 +205,7 @@ public class MainActivity extends Activity {
         });
         ViewCompat.requestApplyInsets(root);
         refreshActions();
+        showEditorPage();
     }
 
     private View appBar() {
@@ -188,7 +215,7 @@ public class MainActivity extends Activity {
         titleBox.setOrientation(LinearLayout.VERTICAL);
         TextView brand = text("UGscaler", 21, ink);
         brand.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        TextView label = text("RESTAURACIÓN FOTOGRÁFICA · IA 100 % LOCAL", 9, cyan);
+        TextView label = text("MEJORA Y REESCALADO DE FOTOS", 9, cyan);
         label.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         titleBox.addView(brand);
         titleBox.addView(label);
@@ -197,6 +224,68 @@ public class MainActivity extends Activity {
         newProjectButton.setOnClickListener(v -> newProject());
         bar.addView(newProjectButton, fixedWidth(122));
         return bar;
+    }
+
+    private View tabBar() {
+        LinearLayout tabs = new LinearLayout(this);
+        tabs.setGravity(Gravity.CENTER_VERTICAL);
+        tabs.setPadding(0, dp(2), 0, dp(4));
+        editorTab = button("Editor", true);
+        generativeTab = button("Crear", false);
+        modelsTab = button("Modelos", false);
+        editorTab.setOnClickListener(v -> showEditorPage());
+        generativeTab.setOnClickListener(v -> showGenerativePage());
+        modelsTab.setOnClickListener(v -> showModelsPage());
+        tabs.addView(editorTab, weight(1f, 0, 5));
+        tabs.addView(generativeTab, weight(1f, 0, 5));
+        tabs.addView(modelsTab, weight(1f, 0, 0));
+        return tabs;
+    }
+
+    private void showEditorPage() {
+        if (scroll == null || pageHost == null) return;
+        modelsPageVisible = false;
+        generativePageVisible = false;
+        scroll.setVisibility(View.VISIBLE);
+        View modelsPage = pageHost.findViewWithTag("models-page");
+        if (modelsPage != null) modelsPage.setVisibility(View.GONE);
+        View generativePage = pageHost.findViewWithTag("generative-page");
+        if (generativePage != null) generativePage.setVisibility(View.GONE);
+        style(editorTab, true);
+        style(generativeTab, false);
+        style(modelsTab, false);
+        newProjectButton.setVisibility(View.VISIBLE);
+    }
+
+    private void showModelsPage() {
+        if (scroll == null || pageHost == null) return;
+        modelsPageVisible = true;
+        generativePageVisible = false;
+        scroll.setVisibility(View.GONE);
+        View modelsPage = pageHost.findViewWithTag("models-page");
+        if (modelsPage != null) modelsPage.setVisibility(View.VISIBLE);
+        View generativePage = pageHost.findViewWithTag("generative-page");
+        if (generativePage != null) generativePage.setVisibility(View.GONE);
+        style(editorTab, false);
+        style(generativeTab, false);
+        style(modelsTab, true);
+        newProjectButton.setVisibility(View.GONE);
+        modelManagerView.openAndCheck();
+    }
+
+    private void showGenerativePage() {
+        if (scroll == null || pageHost == null || processing) return;
+        modelsPageVisible = false;
+        generativePageVisible = true;
+        scroll.setVisibility(View.GONE);
+        View modelsPage = pageHost.findViewWithTag("models-page");
+        if (modelsPage != null) modelsPage.setVisibility(View.GONE);
+        View generativePage = pageHost.findViewWithTag("generative-page");
+        if (generativePage != null) generativePage.setVisibility(View.VISIBLE);
+        style(editorTab, false);
+        style(generativeTab, true);
+        style(modelsTab, false);
+        newProjectButton.setVisibility(View.GONE);
     }
 
     private View intro() {
@@ -385,6 +474,7 @@ public class MainActivity extends Activity {
         }
         recycle(beforeBitmap);
         beforeBitmap = compareSource;
+        generatedFromPrompt = false;
         beginProgress("Analizando desenfoque y movimiento…", 1);
         activeTask = executor.submit(() -> runEnhancement(operation, selection, pipelineOriginal));
     }
@@ -400,13 +490,15 @@ public class MainActivity extends Activity {
             if (sourceCrop == contextCrop.bitmap) sourceCrop = copyOf(contextCrop.bitmap);
             float focusScore = ImageQualityGuard.focusScore(sourceCrop);
             boolean needsDeblur = ImageQualityGuard.shouldDeblur(focusScore);
-            restoredCrop = copyOf(sourceCrop);
+            // The model receives the selected area plus a safety margin from the
+            // original. The final crop is taken only after restoration, so nearby
+            // edges and textures can contribute context to the reconstruction.
+            restoredCrop = copyOf(contextCrop.bitmap);
             setProgress(operation, 47, needsDeblur
-                    ? "Desenfoque intenso detectado · activando protección…"
-                    : "Foto analizada · preparando reconstrucción local…");
+                    ? "Analizando el desenfoque…"
+                    : "Preparando la mejora…");
             int scale = ProcessingMemory.recommendedUpscale(this, restoredCrop);
-            setProgress(operation, 50,
-                    "BSRGAN · reescalando automáticamente ×" + scale + "…");
+            setProgress(operation, 50, "Mejorando la imagen ×" + scale + "…");
             startEstimatedUpscaleProgress(operation);
             try {
                 enhanced = NativeRealEsrgan.enhance(this, restoredCrop, scale);
@@ -417,21 +509,36 @@ public class MainActivity extends Activity {
                 System.gc();
                 enhanced = ImageEnhancer.enhance(this, restoredCrop, scale, 0, 0, 0, 0);
             }
-            enhanced = ImageQualityGuard.ensureMinimumDimensions(enhanced, sourceCrop);
-            setProgress(operation, 90, "Validando la reconstrucción frente al original…");
-            float artifactRisk = ImageQualityGuard.artifactRisk(enhanced, sourceCrop);
+            enhanced = ImageQualityGuard.ensureMinimumDimensions(enhanced, contextCrop.bitmap);
+            setProgress(operation, 90, "Comprobando el resultado…");
+            float artifactRisk = ImageQualityGuard.artifactRisk(enhanced, contextCrop.bitmap);
             boolean conservative = needsDeblur || artifactRisk > .01f;
             setProgress(operation, 92, conservative
-                    ? "Limitando artefactos en zonas no recuperables…"
-                    : "Aplicando el detalle reconstruido por IA…");
+                    ? "Protegiendo el aspecto original…"
+                    : "Finalizando la mejora…");
             enhanced = ImageQualityGuard.protectInPlace(
                     enhanced,
-                    sourceCrop,
+                    contextCrop.bitmap,
                     conservative ? .35f : .90f,
                     conservative ? 20 : 56);
+            enhanced = AdaptiveDetailRefiner.refine(enhanced, contextCrop.bitmap);
+            Bitmap contextualResult = enhanced;
+            enhanced = contextCrop.extract(contextualResult);
+            if (enhanced != contextualResult) recycle(contextualResult);
+            enhanced = ImageQualityGuard.ensureMinimumDimensions(enhanced, sourceCrop);
+            float finalFocus = ImageQualityGuard.focusScore(enhanced);
+            float finalArtifactRisk = ImageQualityGuard.artifactRisk(enhanced, sourceCrop);
             Log.i(TAG, "Protección de calidad aplicada; focusScore=" + focusScore
                     + ", desenfoque=" + needsDeblur + ", artifactRisk=" + artifactRisk
+                    + ", finalFocus=" + finalFocus + ", finalArtifactRisk=" + finalArtifactRisk
                     + ", conservador=" + conservative);
+            if (finalFocus < focusScore * 1.005f || finalArtifactRisk > .08f) {
+                Bitmap candidate = enhanced;
+                enhanced = null;
+                runOnUiThread(() -> showQualityWarning(
+                        operation, candidate, focusScore, finalFocus, finalArtifactRisk));
+                return;
+            }
             setProgress(operation, 95, "Guardando PNG en el carrete…");
             Uri saved = savePng(enhanced);
             Bitmap delivered = enhanced;
@@ -459,6 +566,101 @@ public class MainActivity extends Activity {
             recycle(restoredCrop);
             recycle(enhanced);
         }
+    }
+
+    private void showQualityWarning(int operation, Bitmap candidate, float originalFocus,
+                                    float candidateFocus, float artifactRisk) {
+        if (!isCurrent(operation)) {
+            recycle(candidate);
+            return;
+        }
+        discardQualityWarning();
+        pendingQualityBitmap = candidate;
+        setProgressNow(96, "La mejora necesita tu revisión");
+
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(18), dp(16), dp(18), dp(16));
+        card.setBackground(round(panel, 20));
+        TextView title = text("La IA no ha mejorado suficiente", 20, ink);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        card.addView(title);
+        float gain = originalFocus <= 0f ? 0f
+                : (candidateFocus / originalFocus - 1f) * 100f;
+        String reason = gain < .5f
+                ? "No se ha recuperado más detalle medible que en el original."
+                : "Se han detectado cambios que podrían ser artefactos.";
+        TextView message = text(
+                reason + " La resolución sí ha aumentado, pero UGscaler recomienda conservar "
+                        + "la foto original. Puedes revisar el resultado igualmente.",
+                13, muted);
+        message.setPadding(0, dp(8), 0, dp(15));
+        card.addView(message);
+        LinearLayout buttons = new LinearLayout(this);
+        Button keep = button("Conservar original", true);
+        Button continueButton = button("Guardar igualmente", false);
+        buttons.addView(keep, weight(1.15f, 0, 6));
+        buttons.addView(continueButton, weight(1f, 0, 0));
+        card.addView(buttons, fixed(52));
+
+        keep.setOnClickListener(v -> rejectLowQualityResult());
+        continueButton.setOnClickListener(v -> acceptLowQualityResult(operation));
+        dialog.setOnCancelListener(ignored -> rejectLowQualityResult());
+        dialog.setContentView(card);
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+        }
+        qualityDialog = dialog;
+        dialog.show();
+        if (window != null) {
+            window.setLayout(getResources().getDisplayMetrics().widthPixels - dp(24),
+                    WindowManager.LayoutParams.WRAP_CONTENT);
+        }
+        Log.w(TAG, "Resultado pendiente de confirmación; gain=" + gain
+                + ", artifactRisk=" + artifactRisk);
+    }
+
+    private void acceptLowQualityResult(int operation) {
+        Bitmap candidate = pendingQualityBitmap;
+        pendingQualityBitmap = null;
+        if (qualityDialog != null) qualityDialog.dismiss();
+        qualityDialog = null;
+        if (candidate == null || candidate.isRecycled() || !isCurrent(operation)) {
+            recycle(candidate);
+            endProgress("Resultado descartado");
+            return;
+        }
+        setProgressNow(97, "Guardando PNG en el carrete…");
+        activeTask = executor.submit(() -> {
+            try {
+                Uri saved = savePng(candidate);
+                runOnUiThread(() -> completeEnhancement(operation, candidate, saved));
+            } catch (Exception error) {
+                recycle(candidate);
+                fail(operation, "No se pudo guardar el resultado");
+            }
+        });
+    }
+
+    private void rejectLowQualityResult() {
+        Bitmap rejected = pendingQualityBitmap;
+        pendingQualityBitmap = null;
+        if (qualityDialog != null) qualityDialog.dismiss();
+        qualityDialog = null;
+        recycle(rejected);
+        endProgress("Original conservado · la IA no aportó una mejora suficiente");
+    }
+
+    private void discardQualityWarning() {
+        Bitmap rejected = pendingQualityBitmap;
+        pendingQualityBitmap = null;
+        if (qualityDialog != null) qualityDialog.dismiss();
+        qualityDialog = null;
+        recycle(rejected);
     }
 
     private void completeEnhancement(int operation, Bitmap result, Uri saved) {
@@ -491,7 +693,8 @@ public class MainActivity extends Activity {
         card.setPadding(dp(16), dp(14), dp(16), dp(14));
         card.setBackground(round(panel, 20));
 
-        TextView title = text("Foto mejorada", 21, ink);
+        boolean canCompare = beforeBitmap != null && !beforeBitmap.isRecycled();
+        TextView title = text(generatedFromPrompt ? "Imagen generada" : "Foto mejorada", 21, ink);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         card.addView(title);
         TextView saved = text(
@@ -501,15 +704,31 @@ public class MainActivity extends Activity {
         saved.setPadding(0, dp(3), 0, dp(10));
         card.addView(saved);
 
+        FrameLayout previewFrame = new FrameLayout(this);
         ImageView preview = new ImageView(this);
         preview.setScaleType(ImageView.ScaleType.FIT_CENTER);
         preview.setAdjustViewBounds(false);
         preview.setBackgroundColor(Color.rgb(13, 18, 16));
         preview.setImageBitmap(resultBitmap);
         preview.setContentDescription("Resultado mejorado");
-        card.addView(preview, new LinearLayout.LayoutParams(-1, dp(resultPreviewHeightDp())));
+        previewFrame.addView(preview, new FrameLayout.LayoutParams(-1, -1));
+        TextView comparisonBadge = text("MEJORADA", 10, ink);
+        comparisonBadge.setGravity(Gravity.CENTER);
+        comparisonBadge.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        comparisonBadge.setBackground(round(Color.argb(225, 18, 25, 21), 10));
+        FrameLayout.LayoutParams comparisonBadgeParams = new FrameLayout.LayoutParams(
+                dp(112), dp(30), Gravity.TOP | Gravity.START);
+        comparisonBadgeParams.setMargins(dp(10), dp(10), 0, 0);
+        previewFrame.addView(comparisonBadge, comparisonBadgeParams);
+        card.addView(previewFrame,
+                new LinearLayout.LayoutParams(-1, dp(resultPreviewHeightDp())));
 
-        TextView hint = text("Mantén pulsado Comparar para ver el original", 11, muted);
+        TextView hint = text(
+                canCompare
+                        ? "Toca Comparar para alternar · mantenlo pulsado para una vista rápida"
+                        : "Creada íntegramente en el dispositivo",
+                11,
+                muted);
         hint.setGravity(Gravity.CENTER);
         hint.setPadding(0, dp(8), 0, dp(8));
         card.addView(hint);
@@ -524,21 +743,49 @@ public class MainActivity extends Activity {
         buttons.addView(close, weight(1f, 0, 0));
         card.addView(buttons, fixed(50));
 
+        final boolean[] showingOriginal = {false};
+        Runnable renderComparison = () -> {
+            boolean original = showingOriginal[0]
+                    && beforeBitmap != null && !beforeBitmap.isRecycled();
+            preview.setImageBitmap(original ? beforeBitmap : resultBitmap);
+            preview.setContentDescription(original ? "Foto original" : "Resultado mejorado");
+            comparisonBadge.setText(original ? "ORIGINAL" : "MEJORADA");
+            compare.setText(original ? "Ver mejora" : "Comparar");
+            compare.setContentDescription(original
+                    ? "Mostrar fotografía mejorada"
+                    : "Mostrar fotografía original");
+            hint.setText(original
+                    ? "Mostrando el original · toca Ver mejora para volver"
+                    : "Mostrando la mejora · toca Comparar para ver el original");
+        };
         compare.setOnTouchListener((view, event) -> {
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
-                preview.setImageBitmap(beforeBitmap);
-                viewerBadge.setText("ORIGINAL");
+                view.setPressed(true);
+                if (beforeBitmap != null && !beforeBitmap.isRecycled()) {
+                    preview.setImageBitmap(beforeBitmap);
+                    preview.setContentDescription("Foto original");
+                    comparisonBadge.setText("ORIGINAL");
+                    hint.setText("Original · suelta para fijarlo o volver a la mejora");
+                }
                 return true;
             }
-            if (event.getAction() == MotionEvent.ACTION_UP
-                    || event.getAction() == MotionEvent.ACTION_CANCEL) {
-                preview.setImageBitmap(resultBitmap);
-                viewerBadge.setText(acceptedCrop == null ? "ORIGINAL" : "RECORTE");
+            if (event.getAction() == MotionEvent.ACTION_UP) {
+                view.setPressed(false);
+                long duration = event.getEventTime() - event.getDownTime();
+                if (duration < 450L) showingOriginal[0] = !showingOriginal[0];
+                renderComparison.run();
                 view.performClick();
+                return true;
+            }
+            if (event.getAction() == MotionEvent.ACTION_CANCEL) {
+                view.setPressed(false);
+                renderComparison.run();
                 return true;
             }
             return true;
         });
+        compare.setEnabled(canCompare);
+        compare.setVisibility(canCompare ? View.VISIBLE : View.GONE);
         share.setOnClickListener(v -> shareResult());
         close.setOnClickListener(v -> dialog.dismiss());
 
@@ -675,7 +922,7 @@ public class MainActivity extends Activity {
         handler.postDelayed(new Runnable() {
             @Override public void run() {
                 if (!isCurrent(operation) || !processing || progressValue >= 92) return;
-                setProgressNow(progressValue + 1, "BSRGAN · reconstruyendo detalle…");
+                setProgressNow(progressValue + 1, "Mejorando detalle…");
                 handler.postDelayed(this, 650);
             }
         }, 650);
@@ -706,6 +953,8 @@ public class MainActivity extends Activity {
         enhanceButton.setEnabled(hasImage && !processing && !cropView.isCropMode());
         uploadButton.setEnabled(!processing);
         newProjectButton.setEnabled(!processing || hasImage);
+        generativeTab.setEnabled(!processing);
+        modelsTab.setEnabled(!processing);
         style(cropButton, cropView.isCropMode());
         style(enhanceButton, true);
         style(uploadButton, false);
@@ -726,11 +975,12 @@ public class MainActivity extends Activity {
         progressBar.setVisibility(View.GONE);
         percentText.setText("");
         status.setText("Sube una foto para empezar");
-        dimensions.setText("Procesado privado · sin conexión · salida PNG");
+        dimensions.setText("El resultado se guardará automáticamente en Imágenes/UGscaler");
         refreshActions();
     }
 
     private void cancelWork() {
+        discardQualityWarning();
         generation.incrementAndGet();
         Future<?> task = activeTask;
         activeTask = null;
@@ -812,6 +1062,8 @@ public class MainActivity extends Activity {
     @Override public void onBackPressed() {
         if (resultDialog != null) {
             dismissResult();
+        } else if (modelsPageVisible || generativePageVisible) {
+            showEditorPage();
         } else if (cropView.isCropMode()) {
             scroll.setScrollingEnabled(true);
             cropView.setBitmap(acceptedCrop != null ? acceptedCrop : originalBitmap);
@@ -828,11 +1080,67 @@ public class MainActivity extends Activity {
     @Override protected void onDestroy() {
         destroyed = true;
         dismissResult();
+        discardQualityWarning();
         cancelWork();
+        if (modelManagerView != null) modelManagerView.close();
+        if (generativeView != null) generativeView.close();
         executor.shutdownNow();
         cropView.setBitmap(null);
         recycleProjectBitmaps();
         super.onDestroy();
+    }
+
+    @Override public Bitmap sourceForGenerative() {
+        Bitmap source = acceptedCrop != null && !acceptedCrop.isRecycled()
+                ? acceptedCrop : originalBitmap;
+        return copyOf(source);
+    }
+
+    @Override public void showDownloads() {
+        showModelsPage();
+    }
+
+    @Override public void deliverGenerativeResult(Bitmap result, Bitmap before) {
+        if (result == null || result.isRecycled()) {
+            recycle(before);
+            toast("La IA local no devolvió una imagen válida");
+            return;
+        }
+        final int operation = generation.incrementAndGet();
+        processing = true;
+        generatedFromPrompt = before == null;
+        refreshActions();
+        activeTask = executor.submit(() -> {
+            Uri saved = null;
+            Exception saveError = null;
+            try {
+                saved = savePng(result);
+            } catch (Exception error) {
+                saveError = error;
+                Log.e(TAG, "No se pudo guardar el resultado generativo", error);
+            }
+            Uri deliveredUri = saved;
+            Exception deliveredError = saveError;
+            runOnUiThread(() -> {
+                if (!isCurrent(operation)) {
+                    recycle(result);
+                    recycle(before);
+                    return;
+                }
+                recycle(resultBitmap);
+                recycle(beforeBitmap);
+                resultBitmap = result;
+                beforeBitmap = before;
+                savedResultUri = deliveredUri;
+                processing = false;
+                activeTask = null;
+                refreshActions();
+                if (deliveredError != null) {
+                    toast("Imagen creada, pero no se pudo guardar en el carrete");
+                }
+                showResultDialog();
+            });
+        });
     }
 
     @Override public void onRequestPermissionsResult(

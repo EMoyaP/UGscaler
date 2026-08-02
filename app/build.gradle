@@ -3,11 +3,15 @@ plugins {
 }
 
 android { namespace 'com.mejorarfotos.app'; compileSdk 36
+    ndkVersion '29.0.14206865'
     defaultConfig {
-        applicationId 'com.mejorarfotos.app'; minSdk 26; targetSdk 36; versionCode 17; versionName '1.6.6'
+        applicationId 'com.mejorarfotos.app'; minSdk 26; targetSdk 36; versionCode 18; versionName '1.6.7'
         // El Redmi Note 13 Pro+ es ARM64. Evitamos incluir bibliotecas de 32 bits
         // que no puede usar y reducimos significativamente el tamaño de la APK.
         ndk { abiFilters 'arm64-v8a' }
+        externalNativeBuild {
+            cmake { cppFlags '-O3' }
+        }
     }
     applicationVariants.configureEach { variant ->
         variant.outputs.configureEach { output ->
@@ -30,9 +34,15 @@ android { namespace 'com.mejorarfotos.app'; compileSdk 36
     }
     packaging {
         jniLibs {
-            // The BSRGAN/NCNN executable is installed in the read-only native library
-            // directory. Android 10+ forbids executing binaries copied to filesDir.
+            // Keep native libraries extracted so Android can load the 16 KB-aligned
+            // NCNN JNI bridge and the optional local diffusion runtime directly.
             useLegacyPackaging = true
+        }
+    }
+    externalNativeBuild {
+        cmake {
+            path file('src/main/cpp/CMakeLists.txt')
+            version '3.31.6'
         }
     }
 }
@@ -40,5 +50,6 @@ android { namespace 'com.mejorarfotos.app'; compileSdk 36
 dependencies {
     implementation 'androidx.core:core:1.17.0'
     implementation 'androidx.exifinterface:exifinterface:1.4.2'
+    implementation 'net.java.dev.jna:jna:5.17.0@aar'
     testImplementation 'junit:junit:4.13.2'
 }
